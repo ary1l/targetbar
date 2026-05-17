@@ -1,7 +1,7 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
 addon.version = '.05'
-addon.desc    = 'Target HP bar with name and distance'
+addon.desc    = 'Target HP bar with name+distance'
 addon.commands = { 'targetbar', 'tbar' }
 
 require('common')
@@ -33,6 +33,7 @@ local COLOR_PC_ALLY  = {0.62, 0.89, 1.00, 1.0}
 local COLOR_PC_OTHER = {0.80, 0.90, 1.00, 1.0}
 local COLOR_ENEMY    = {0.97, 0.93, 0.55, 1.0}  -- yellow for all enemies
 
+-- HP gradient stops high -> low
 local HP_GRADIENT = {
     { at=1.00, r=0.20, g=0.90, b=0.20 },  -- 100%: green
     { at=0.75, r=0.60, g=0.90, b=0.10 },  -- 75%:  yellow-green
@@ -195,13 +196,20 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
 
     if imgui.Begin('##targetbar', show_ui, flags) then
 
+        -- 1. Draw Distance First
+        if cfg.show_distance then
+            imgui.TextColored(dist_color(t.dist), string.format('%.1fy', t.dist))
+            imgui.SameLine()
+        end
+
+        -- 2. Draw Name Second
         local name_str = t.name
         if cfg.show_index then name_str = name_str .. string.format(' [%d]', t.index) end
         if cfg.show_hex   then name_str = name_str .. string.format(' (%X)', t.server_id) end
 
         imgui.TextColored(t.name_color, name_str)
 
-        -- Only display HP text information if it is NOT a town NPC
+        -- 3. Draw HP Percentage Third (Only if NOT a town NPC)
         if not t.is_real_npc then
             imgui.SameLine()
             if t.dead then
@@ -209,11 +217,6 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
             else
                 imgui.TextColored({0.8, 0.8, 0.8, 1.0}, string.format('%d%%', t.hp_pct))
             end
-        end
-
-        if cfg.show_distance then
-            imgui.SameLine()
-            imgui.TextColored(dist_color(t.dist), string.format('%.1fy', t.dist))
         end
 
         ------------------------------------------------------------
@@ -240,7 +243,6 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     end
     imgui.End()
 end)
-
 ------------------------------------------------------------
 -- COMMANDS
 ------------------------------------------------------------

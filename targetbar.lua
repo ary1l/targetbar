@@ -1,7 +1,7 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '.003'
-addon.desc    = 'Target HP bar with name&distance
+addon.version = '1.5'
+addon.desc    = 'Target HP bar with name and distance'
 addon.commands = { 'targetbar', 'tbar' }
 
 require('common')
@@ -45,7 +45,7 @@ local HP_GRADIENT = {
 -- HP GRADIENT
 ------------------------------------------------------------
 local function hp_bar_color(frac)
-    local col = {0.90, 0.10, 0.10, 1.0}
+    local col = {0.90, 0.10, 0.10, 1.0} -- fallback red
     
     if frac >= 1.0 then 
         col = {0.20, 0.90, 0.20, 1.0}
@@ -68,7 +68,7 @@ local function hp_bar_color(frac)
             end
         end
     end
-   
+    
     return imgui.GetColorU32(col)
 end
 
@@ -122,6 +122,7 @@ local function get_target_info()
 
     local name_color
     local bar_color = hp_bar_color(hp_frac)
+    local is_real_npc = false
 
     if is_pc then
         if sId == self_id then
@@ -135,6 +136,7 @@ local function get_target_info()
         end
     elseif is_npc and not is_mob then
         name_color = COLOR_NPC
+        is_real_npc = true  -- Flag this target as a friendly/town NPC
     else
         name_color = COLOR_ENEMY
     end
@@ -142,15 +144,16 @@ local function get_target_info()
     if dead then bar_color = COLOR_BAR_DEAD end
 
     return {
-        name       = name,
-        name_color = name_color,
-        hp_frac    = hp_frac,
-        hp_pct     = hp_pct,
-        dead       = dead,
-        dist       = dist,
-        bar_color  = bar_color,
-        index      = tIdx,
-        server_id  = sId,
+        name        = name,
+        name_color  = name_color,
+        hp_frac     = hp_frac,
+        hp_pct      = hp_pct,
+        dead        = dead,
+        dist        = dist,
+        bar_color   = bar_color,
+        index       = tIdx,
+        server_id   = sId,
+        is_real_npc = is_real_npc,
     }
 end
 
@@ -198,11 +201,14 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
 
         imgui.TextColored(t.name_color, name_str)
 
-        imgui.SameLine()
-        if t.dead then
-            imgui.TextColored({0.6, 0.2, 0.2, 1.0}, 'DEAD')
-        else
-            imgui.TextColored({0.8, 0.8, 0.8, 1.0}, string.format('%d%%', t.hp_pct))
+        -- Only display HP text information if it is NOT a town NPC
+        if not t.is_real_npc then
+            imgui.SameLine()
+            if t.dead then
+                imgui.TextColored({0.6, 0.2, 0.2, 1.0}, 'DEAD')
+            else
+                imgui.TextColored({0.8, 0.8, 0.8, 1.0}, string.format('%d%%', t.hp_pct))
+            end
         end
 
         if cfg.show_distance then
@@ -213,18 +219,19 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         ------------------------------------------------------------
         -- DIRECT OBJECT INJECTION DRAWING
         ------------------------------------------------------------
-        local cursor_x, cursor_y = imgui.GetCursorScreenPos()
-        
-        -- Allocates exact layout bounds inside the transparent window
-        imgui.Dummy({bw, bh}) 
-        
-        local draw_list = imgui.GetWindowDrawList()
-        if draw_list then
-            -- Object style method calls via ':'
-            draw_list:AddRectFilled({ cursor_x, cursor_y }, { cursor_x + bw, cursor_y + bh }, COLOR_BAR_BG)
+        -- Only draw the visual progress bar element if it is NOT a town NPC
+        if not t.is_real_npc then
+            local cursor_x, cursor_y = imgui.GetCursorScreenPos()
             
-            if t.hp_frac > 0 then
-                draw_list:AddRectFilled({ cursor_x, cursor_y }, { cursor_x + (bw * t.hp_frac), cursor_y + bh }, t.bar_color)
+            imgui.Dummy({bw, bh}) 
+            
+            local draw_list = imgui.GetWindowDrawList()
+            if draw_list then
+                draw_list:AddRectFilled({ cursor_x, cursor_y }, { cursor_x + bw, cursor_y + bh }, COLOR_BAR_BG)
+                
+                if t.hp_frac > 0 then
+                    draw_list:AddRectFilled({ cursor_x, cursor_y }, { cursor_x + (bw * t.hp_frac), cursor_y + bh }, t.bar_color)
+                end
             end
         end
         ------------------------------------------------------------

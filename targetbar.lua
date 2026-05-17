@@ -1,7 +1,7 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
 addon.version = '.003'
-addon.desc    = 'Target HP bar with name, distance, and claim status'
+addon.desc    = 'Target HP bar with name&distance
 addon.commands = { 'targetbar', 'tbar' }
 
 require('common')

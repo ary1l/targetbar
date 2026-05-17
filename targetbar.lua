@@ -104,7 +104,9 @@ local function get_target_info()
         bar_color  = COLOR_NPC
     else
         -- monster
-        local claim_id = entity:GetClaimServerId(tIdx) or 0
+        local claim_id = 0
+        local ok, cid = pcall(function() return entity:GetClaimServerId(tIdx) end)
+        if ok and cid then claim_id = cid end
         if claim_id == 0 then
             name_color = COLOR_UNCLAIMED
             bar_color  = COLOR_UNCLAIMED

@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '1.5'
+addon.version = '.05'
 addon.desc    = 'Target HP bar with name and distance'
 addon.commands = { 'targetbar', 'tbar' }
 

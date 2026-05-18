@@ -1,7 +1,7 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '1.00'
-addon.desc    = 'Target HP bar with uniform layout sizing and bitmask lock-on tracking'
+addon.version = '1.06'
+addon.desc    = 'Target and Subtarget HP bars - subtarget grows upward'
 addon.commands = { 'targetbar', 'tbar' }
 
 require('common')
@@ -18,13 +18,14 @@ local cfg = {
     show_distance = true,
     show_index    = false,
     show_hex      = false,
+    locked        = false,
 }
 
 ------------------------------------------------------------
 -- COLORS
 ------------------------------------------------------------
-local COLOR_PANEL_BG = imgui.GetColorU32({0.05, 0.05, 0.05, 0.65}) -- Dark grey/black panel with 65% transparency
-local COLOR_BAR_BG   = imgui.GetColorU32({0.18, 0.18, 0.18, 0.85}) -- Inner health bar track background
+local COLOR_PANEL_BG = imgui.GetColorU32({0.05, 0.05, 0.05, 0.65})
+local COLOR_BAR_BG   = imgui.GetColorU32({0.18, 0.18, 0.18, 0.85})
 local COLOR_BAR_DEAD = imgui.GetColorU32({0.59, 0.12, 0.12, 1.0})
 
 local COLOR_NPC      = {0.55, 0.89, 0.52, 1.0}
@@ -32,26 +33,24 @@ local COLOR_PC_SELF  = {0.26, 0.53, 0.96, 1.0}
 local COLOR_PC_PARTY = {0.27, 0.78, 1.00, 1.0}
 local COLOR_PC_ALLY  = {0.62, 0.89, 1.00, 1.0}
 local COLOR_PC_OTHER = {0.80, 0.90, 1.00, 1.0}
-local COLOR_ENEMY    = {0.97, 0.93, 0.55, 1.0}  -- Yellow for enemies
+local COLOR_ENEMY    = {0.97, 0.93, 0.55, 1.0}
 
--- HP gradient stops high -> low
 local HP_GRADIENT = {
-    { at=1.00, r=0.20, g=0.90, b=0.20 },  -- 100%: green
-    { at=0.75, r=0.60, g=0.90, b=0.10 },  -- 75%:  yellow-green
-    { at=0.50, r=1.00, g=0.80, b=0.00 },  -- 50%:  yellow
-    { at=0.25, r=1.00, g=0.45, b=0.00 },  -- 25%:  orange
-    { at=0.00, r=0.90, g=0.10, b=0.10 },  -- 0%:   red
+    { at=1.00, r=0.12, g=0.55, b=0.12 },
+    { at=0.75, r=0.50, g=0.65, b=0.10 },
+    { at=0.50, r=1.00, g=0.80, b=0.00 },
+    { at=0.25, r=1.00, g=0.45, b=0.00 },
+    { at=0.00, r=0.90, g=0.10, b=0.10 },
 }
 
 ------------------------------------------------------------
 -- HP GRADIENT
 ------------------------------------------------------------
 local function hp_bar_color(frac)
-    local col = {0.90, 0.10, 0.10, 1.0} -- fallback red
-    
-    if frac >= 1.0 then 
-        col = {0.20, 0.90, 0.20, 1.0}
-    elseif frac <= 0.0 then 
+    local col = {0.90, 0.10, 0.10, 1.0}
+    if frac >= 1.0 then
+        col = {0.12, 0.55, 0.12, 1.0}
+    elseif frac <= 0.0 then
         col = {0.90, 0.10, 0.10, 1.0}
     else
         for i = 1, #HP_GRADIENT - 1 do
@@ -70,7 +69,6 @@ local function hp_bar_color(frac)
             end
         end
     end
-    
     return imgui.GetColorU32(col)
 end
 
@@ -93,24 +91,13 @@ local function get_party_server_ids()
     return ids
 end
 
-local function get_target_info()
-    local targ   = mm:GetTarget()
+local function parse_target_data(tIdx, force_sub_brackets)
     local entity = mm:GetEntity()
     local party  = mm:GetParty()
+    local targ   = mm:GetTarget()
 
-    local isSub = targ:GetIsSubTargetActive()
-    local tIdx  = targ:GetTargetIndex(isSub)
     if not tIdx or tIdx == 0 then return nil end
 
-    -- Evaluates Bit 0 out of flag layout to look for the lock state change
-    local is_locked = false
-    if type(targ.GetLockedOnFlags) == 'function' then
-        local flags = targ:GetLockedOnFlags()
-        if type(flags) == 'number' then
-            is_locked = (bit.band(flags, 0x01) ~= 0)
-        end
-    end
-    
     local sId = entity:GetServerId(tIdx)
     if not sId or sId == 0 then return nil end
 
@@ -147,12 +134,20 @@ local function get_target_info()
         end
     elseif is_npc and not is_mob then
         name_color = COLOR_NPC
-        is_real_npc = true  -- Town NPC Flag
+        is_real_npc = true
     else
         name_color = COLOR_ENEMY
     end
 
     if dead then bar_color = COLOR_BAR_DEAD end
+
+    local is_locked = false
+    if not force_sub_brackets and type(targ.GetLockedOnFlags) == 'function' then
+        local flags = targ:GetLockedOnFlags()
+        if type(flags) == 'number' then
+            is_locked = (bit.band(flags, 0x01) ~= 0)
+        end
+    end
 
     return {
         name        = name,
@@ -165,48 +160,36 @@ local function get_target_info()
         index       = tIdx,
         server_id   = sId,
         is_real_npc = is_real_npc,
-        is_locked   = is_locked,
+        is_locked   = is_locked or force_sub_brackets,
     }
 end
 
-local function dist_color(d)
-    if d <= 21.0 then
-        return {0.29, 1.00, 0.29, 1.0}
-    elseif d <= 50.0 then
-        return {0.00, 0.78, 1.00, 1.0}
-    else
-        return {1.00, 1.00, 1.00, 1.0}
-    end
-end
-
 ------------------------------------------------------------
--- RENDER
+-- RENDER INDIVIDUAL BAR
+-- Returns the rendered window height so subtarget can
+-- position itself above the main bar.
 ------------------------------------------------------------
-local show_ui = { true }
+local last_main_h  = 0
+local last_sub_h   = 0
 
-ashita.events.register('d3d_present', 'targetbar_render', function()
-    if not show_ui[1] then return end
-
-    local t = get_target_info()
-    if not t then return end
-
+local function render_bar_panel(t, is_subtarget, win_id, pos_x, pos_y)
     local bw = cfg.bar_width
-    local bh = cfg.bar_height
-
-    imgui.SetNextWindowPos({cfg.pos_x, cfg.pos_y}, ImGuiCond_Once)
-    imgui.SetNextWindowSize({bw + 16, 0}, ImGuiCond_Always)
+    local bh = is_subtarget and math.max(2, math.floor(cfg.bar_height / 2)) or cfg.bar_height
 
     local flags = bit.bor(
         ImGuiWindowFlags_NoDecoration,
         ImGuiWindowFlags_AlwaysAutoResize,
-        ImGuiWindowFlags_NoSavedSettings,
         ImGuiWindowFlags_NoFocusOnAppearing,
         ImGuiWindowFlags_NoNav,
-        ImGuiWindowFlags_NoBackground
+        ImGuiWindowFlags_NoBackground,
+        ImGuiWindowFlags_NoMove          -- subtarget window is always auto-positioned
     )
 
-    if imgui.Begin('##targetbar', show_ui, flags) then
-        
+    imgui.SetNextWindowPos({pos_x, pos_y}, ImGuiCond_Always)
+    imgui.SetNextWindowSize({bw + 16, 0}, ImGuiCond_Always)
+
+    if imgui.Begin(win_id, {true}, flags) then
+
         local draw_list = imgui.GetWindowDrawList()
         if draw_list then
             local wx, wy = imgui.GetWindowPos()
@@ -215,25 +198,25 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         end
 
         imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
-        imgui.SetCursorPosY(imgui.GetCursorPosY() + 2)
+        imgui.SetCursorPosY(imgui.GetCursorPosY() + (is_subtarget and 0 or 2))
 
         -- 1. Distance
         if cfg.show_distance then
-            imgui.TextColored(dist_color(t.dist), string.format('%.1fy', t.dist))
+            local d_col = {1.0, 1.0, 1.0, 1.0}
+            if t.dist <= 21.0 then d_col = {0.29, 1.00, 0.29, 1.0}
+            elseif t.dist <= 50.0 then d_col = {0.00, 0.78, 1.00, 1.0} end
+            imgui.TextColored(d_col, string.format('%.1f', t.dist))
             imgui.SameLine()
         end
 
-        -- 2. Name/Lock Verification
+        -- 2. Name
         local name_str = t.name
-        if t.is_locked then 
-            name_str = '(' .. name_str .. ')' 
-        end
+        if t.is_locked    then name_str = '<' .. name_str .. '>' end
         if cfg.show_index then name_str = name_str .. string.format(' [%d]', t.index) end
         if cfg.show_hex   then name_str = name_str .. string.format(' (%X)', t.server_id) end
-
         imgui.TextColored(t.name_color, name_str)
 
-        -- 3. HP Percentage Display (Hidden for town NPCs)
+        -- 3. HP Percentage
         if not t.is_real_npc then
             imgui.SameLine()
             if t.dead then
@@ -243,21 +226,183 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
             end
         end
 
-        ------------------------------------------------------------
-        -- UNIFORM OBJECT RENDERING (HP BAR TRACK)
-        ------------------------------------------------------------
+        -- 4. HP Bar
         imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
         local cursor_x, cursor_y = imgui.GetCursorScreenPos()
-        imgui.Dummy({bw, bh}) 
+        imgui.Dummy({bw, bh})
+
         if draw_list then
-            draw_list:AddRectFilled({ cursor_x, cursor_y }, { cursor_x + bw, cursor_y + bh }, COLOR_BAR_BG)
+            draw_list:AddRectFilled({cursor_x, cursor_y}, {cursor_x + bw, cursor_y + bh}, COLOR_BAR_BG)
             if not t.is_real_npc and t.hp_frac > 0 then
-                draw_list:AddRectFilled({ cursor_x, cursor_y }, { cursor_x + (bw * t.hp_frac), cursor_y + bh }, t.bar_color)
+                draw_list:AddRectFilled({cursor_x, cursor_y}, {cursor_x + (bw * t.hp_frac), cursor_y + bh}, t.bar_color)
             end
         end
-        cfg.pos_x, cfg.pos_y = imgui.GetWindowPos()
+
+        -- capture height for next frame positioning
+        local _, wh = imgui.GetWindowSize()
+        if is_subtarget then last_sub_h = wh else last_main_h = wh end
     end
     imgui.End()
+end
+
+------------------------------------------------------------
+-- CORE ENGINE LOOP
+------------------------------------------------------------
+local show_ui = { true }
+
+ashita.events.register('d3d_present', 'targetbar_render', function()
+    if not show_ui[1] then return end
+
+    local targ = mm:GetTarget()
+    if not targ then return end
+
+    local main_idx      = targ:GetTargetIndex(0)
+    local sub_active_raw = targ:GetIsSubTargetActive()
+    local is_sub_active  = (sub_active_raw ~= nil and sub_active_raw ~= 0 and sub_active_raw ~= false)
+    local sub_idx        = is_sub_active and targ:GetTargetIndex(1) or 0
+
+    if main_idx == 0 and sub_idx == 0 then return end
+
+    -- Main bar always at cfg.pos_x / cfg.pos_y — never moves
+    if main_idx ~= 0 then
+        local main_data = parse_target_data(main_idx, false)
+        if main_data then
+            local flags = bit.bor(
+                ImGuiWindowFlags_NoDecoration,
+                ImGuiWindowFlags_AlwaysAutoResize,
+                ImGuiWindowFlags_NoFocusOnAppearing,
+                ImGuiWindowFlags_NoNav,
+                ImGuiWindowFlags_NoBackground
+            )
+            if cfg.locked then flags = bit.bor(flags, ImGuiWindowFlags_NoMove) end
+
+            imgui.SetNextWindowPos({cfg.pos_x, cfg.pos_y}, ImGuiCond_Once)
+            imgui.SetNextWindowSize({cfg.bar_width + 16, 0}, ImGuiCond_Always)
+
+            if imgui.Begin('##targetbar_main', show_ui, flags) then
+                local draw_list = imgui.GetWindowDrawList()
+                if draw_list then
+                    local wx, wy = imgui.GetWindowPos()
+                    local ww, wh = imgui.GetWindowSize()
+                    draw_list:AddRectFilled({wx, wy}, {wx + ww, wy + wh}, COLOR_PANEL_BG, 4.0)
+                end
+
+                imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
+                imgui.SetCursorPosY(imgui.GetCursorPosY() + 2)
+
+                if cfg.show_distance then
+                    local d_col = {1.0,1.0,1.0,1.0}
+                    if main_data.dist <= 21.0 then d_col = {0.29,1.00,0.29,1.0}
+                    elseif main_data.dist <= 50.0 then d_col = {0.00,0.78,1.00,1.0} end
+                    imgui.TextColored(d_col, string.format('%.1f', main_data.dist))
+                    imgui.SameLine()
+                end
+
+                local name_str = main_data.name
+                if main_data.is_locked then name_str = '<' .. name_str .. '>' end
+                if cfg.show_index then name_str = name_str .. string.format(' [%d]', main_data.index) end
+                if cfg.show_hex   then name_str = name_str .. string.format(' (%X)', main_data.server_id) end
+                imgui.TextColored(main_data.name_color, name_str)
+
+                if not main_data.is_real_npc then
+                    imgui.SameLine()
+                    if main_data.dead then
+                        imgui.TextColored({0.6,0.2,0.2,1.0}, 'DEAD')
+                    else
+                        imgui.TextColored({0.8,0.8,0.8,1.0}, string.format('%d%%', main_data.hp_pct))
+                    end
+                end
+
+                imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
+                local cx, cy = imgui.GetCursorScreenPos()
+                local bw, bh = cfg.bar_width, cfg.bar_height
+                imgui.Dummy({bw, bh})
+                if draw_list then
+                    draw_list:AddRectFilled({cx,cy},{cx+bw,cy+bh},COLOR_BAR_BG)
+                    if not main_data.is_real_npc and main_data.hp_frac > 0 then
+                        draw_list:AddRectFilled({cx,cy},{cx+bw*main_data.hp_frac,cy+bh},main_data.bar_color)
+                    end
+                end
+
+                local _, wh = imgui.GetWindowSize()
+                last_main_h = wh
+
+                if not cfg.locked then
+                    cfg.pos_x, cfg.pos_y = imgui.GetWindowPos()
+                end
+            end
+            imgui.End()
+        end
+    end
+
+    -- Subtarget bar renders in a SEPARATE window positioned above the main bar
+    if is_sub_active and sub_idx ~= 0 and sub_idx ~= main_idx then
+        local sub_data = parse_target_data(sub_idx, true)
+        if sub_data then
+            local gap  = 4
+            local sub_y = cfg.pos_y - last_sub_h - gap
+
+            local sub_flags = bit.bor(
+                ImGuiWindowFlags_NoDecoration,
+                ImGuiWindowFlags_AlwaysAutoResize,
+                ImGuiWindowFlags_NoFocusOnAppearing,
+                ImGuiWindowFlags_NoNav,
+                ImGuiWindowFlags_NoBackground,
+                ImGuiWindowFlags_NoMove
+            )
+
+            imgui.SetNextWindowPos({cfg.pos_x, sub_y}, ImGuiCond_Always)
+            imgui.SetNextWindowSize({cfg.bar_width + 16, 0}, ImGuiCond_Always)
+
+            if imgui.Begin('##targetbar_sub', {true}, sub_flags) then
+                local draw_list = imgui.GetWindowDrawList()
+                if draw_list then
+                    local wx, wy = imgui.GetWindowPos()
+                    local ww, wh = imgui.GetWindowSize()
+                    draw_list:AddRectFilled({wx,wy},{wx+ww,wy+wh},COLOR_PANEL_BG,4.0)
+                end
+
+                imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
+
+                if cfg.show_distance then
+                    local d_col = {1.0,1.0,1.0,1.0}
+                    if sub_data.dist <= 21.0 then d_col = {0.29,1.00,0.29,1.0}
+                    elseif sub_data.dist <= 50.0 then d_col = {0.00,0.78,1.00,1.0} end
+                    imgui.TextColored(d_col, string.format('%.1f', sub_data.dist))
+                    imgui.SameLine()
+                end
+
+                local name_str = sub_data.name
+                if sub_data.is_locked then name_str = '<' .. name_str .. '>' end
+                imgui.TextColored(sub_data.name_color, name_str)
+
+                if not sub_data.is_real_npc then
+                    imgui.SameLine()
+                    if sub_data.dead then
+                        imgui.TextColored({0.6,0.2,0.2,1.0}, 'DEAD')
+                    else
+                        imgui.TextColored({0.8,0.8,0.8,1.0}, string.format('%d%%', sub_data.hp_pct))
+                    end
+                end
+
+                imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
+                local cx, cy = imgui.GetCursorScreenPos()
+                local bw = cfg.bar_width
+                local bh = math.max(2, math.floor(cfg.bar_height / 2))
+                imgui.Dummy({bw, bh})
+                if draw_list then
+                    draw_list:AddRectFilled({cx,cy},{cx+bw,cy+bh},COLOR_BAR_BG)
+                    if not sub_data.is_real_npc and sub_data.hp_frac > 0 then
+                        draw_list:AddRectFilled({cx,cy},{cx+bw*sub_data.hp_frac,cy+bh},sub_data.bar_color)
+                    end
+                end
+
+                local _, wh = imgui.GetWindowSize()
+                last_sub_h = wh
+            end
+            imgui.End()
+        end
+    end
 end)
 
 ------------------------------------------------------------
@@ -278,6 +423,9 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
         show_ui[1] = true
     elseif sub == 'hide' then
         show_ui[1] = false
+    elseif sub == 'lock' then
+        cfg.locked = not cfg.locked
+        print('[targetbar] lock: ' .. tostring(cfg.locked))
     elseif sub == 'dist' then
         cfg.show_distance = not cfg.show_distance
         print('[targetbar] distance: ' .. (cfg.show_distance and 'on' or 'off'))
@@ -290,6 +438,7 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
     elseif sub == 'help' then
         local lines = {
             '[targetbar] /tbar toggle|show|hide',
+            '[targetbar] /tbar lock        - toggle position lock',
             '[targetbar] /tbar dist        - toggle distance display',
             '[targetbar] /tbar width  <n>  - set bar width in pixels',
             '[targetbar] /tbar height <n>  - set bar height in pixels',

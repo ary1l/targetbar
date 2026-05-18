@@ -1,7 +1,7 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '.05'
-addon.desc    = 'Target HP bar with name+distance'
+addon.version = '1.00'
+addon.desc    = 'Target HP bar with uniform layout sizing and bitmask lock-on tracking'
 addon.commands = { 'targetbar', 'tbar' }
 
 require('common')
@@ -23,7 +23,8 @@ local cfg = {
 ------------------------------------------------------------
 -- COLORS
 ------------------------------------------------------------
-local COLOR_BAR_BG   = imgui.GetColorU32({0.10, 0.10, 0.10, 0.85})
+local COLOR_PANEL_BG = imgui.GetColorU32({0.05, 0.05, 0.05, 0.65}) -- Dark grey/black panel with 65% transparency
+local COLOR_BAR_BG   = imgui.GetColorU32({0.18, 0.18, 0.18, 0.85}) -- Inner health bar track background
 local COLOR_BAR_DEAD = imgui.GetColorU32({0.59, 0.12, 0.12, 1.0})
 
 local COLOR_NPC      = {0.55, 0.89, 0.52, 1.0}
@@ -31,7 +32,7 @@ local COLOR_PC_SELF  = {0.26, 0.53, 0.96, 1.0}
 local COLOR_PC_PARTY = {0.27, 0.78, 1.00, 1.0}
 local COLOR_PC_ALLY  = {0.62, 0.89, 1.00, 1.0}
 local COLOR_PC_OTHER = {0.80, 0.90, 1.00, 1.0}
-local COLOR_ENEMY    = {0.97, 0.93, 0.55, 1.0}  -- yellow for all enemies
+local COLOR_ENEMY    = {0.97, 0.93, 0.55, 1.0}  -- Yellow for enemies
 
 -- HP gradient stops high -> low
 local HP_GRADIENT = {
@@ -101,6 +102,15 @@ local function get_target_info()
     local tIdx  = targ:GetTargetIndex(isSub)
     if not tIdx or tIdx == 0 then return nil end
 
+    -- Evaluates Bit 0 out of flag layout to look for the lock state change
+    local is_locked = false
+    if type(targ.GetLockedOnFlags) == 'function' then
+        local flags = targ:GetLockedOnFlags()
+        if type(flags) == 'number' then
+            is_locked = (bit.band(flags, 0x01) ~= 0)
+        end
+    end
+    
     local sId = entity:GetServerId(tIdx)
     if not sId or sId == 0 then return nil end
 
@@ -137,7 +147,7 @@ local function get_target_info()
         end
     elseif is_npc and not is_mob then
         name_color = COLOR_NPC
-        is_real_npc = true  -- Flag this target as a friendly/town NPC
+        is_real_npc = true  -- Town NPC Flag
     else
         name_color = COLOR_ENEMY
     end
@@ -155,6 +165,7 @@ local function get_target_info()
         index       = tIdx,
         server_id   = sId,
         is_real_npc = is_real_npc,
+        is_locked   = is_locked,
     }
 end
 
@@ -195,21 +206,34 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     )
 
     if imgui.Begin('##targetbar', show_ui, flags) then
+        
+        local draw_list = imgui.GetWindowDrawList()
+        if draw_list then
+            local wx, wy = imgui.GetWindowPos()
+            local ww, wh = imgui.GetWindowSize()
+            draw_list:AddRectFilled({wx, wy}, {wx + ww, wy + wh}, COLOR_PANEL_BG, 4.0)
+        end
 
-        -- 1. Draw Distance First
+        imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
+        imgui.SetCursorPosY(imgui.GetCursorPosY() + 2)
+
+        -- 1. Distance
         if cfg.show_distance then
             imgui.TextColored(dist_color(t.dist), string.format('%.1fy', t.dist))
             imgui.SameLine()
         end
 
-        -- 2. Draw Name Second
+        -- 2. Name/Lock Verification
         local name_str = t.name
+        if t.is_locked then 
+            name_str = '(' .. name_str .. ')' 
+        end
         if cfg.show_index then name_str = name_str .. string.format(' [%d]', t.index) end
         if cfg.show_hex   then name_str = name_str .. string.format(' (%X)', t.server_id) end
 
         imgui.TextColored(t.name_color, name_str)
 
-        -- 3. Draw HP Percentage Third (Only if NOT a town NPC)
+        -- 3. HP Percentage Display (Hidden for town NPCs)
         if not t.is_real_npc then
             imgui.SameLine()
             if t.dead then
@@ -220,29 +244,22 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         end
 
         ------------------------------------------------------------
-        -- DIRECT OBJECT INJECTION DRAWING
+        -- UNIFORM OBJECT RENDERING (HP BAR TRACK)
         ------------------------------------------------------------
-        -- Only draw the visual progress bar element if it is NOT a town NPC
-        if not t.is_real_npc then
-            local cursor_x, cursor_y = imgui.GetCursorScreenPos()
-            
-            imgui.Dummy({bw, bh}) 
-            
-            local draw_list = imgui.GetWindowDrawList()
-            if draw_list then
-                draw_list:AddRectFilled({ cursor_x, cursor_y }, { cursor_x + bw, cursor_y + bh }, COLOR_BAR_BG)
-                
-                if t.hp_frac > 0 then
-                    draw_list:AddRectFilled({ cursor_x, cursor_y }, { cursor_x + (bw * t.hp_frac), cursor_y + bh }, t.bar_color)
-                end
+        imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
+        local cursor_x, cursor_y = imgui.GetCursorScreenPos()
+        imgui.Dummy({bw, bh}) 
+        if draw_list then
+            draw_list:AddRectFilled({ cursor_x, cursor_y }, { cursor_x + bw, cursor_y + bh }, COLOR_BAR_BG)
+            if not t.is_real_npc and t.hp_frac > 0 then
+                draw_list:AddRectFilled({ cursor_x, cursor_y }, { cursor_x + (bw * t.hp_frac), cursor_y + bh }, t.bar_color)
             end
         end
-        ------------------------------------------------------------
-
         cfg.pos_x, cfg.pos_y = imgui.GetWindowPos()
     end
     imgui.End()
 end)
+
 ------------------------------------------------------------
 -- COMMANDS
 ------------------------------------------------------------

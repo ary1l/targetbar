@@ -1,7 +1,7 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '1.06'
-addon.desc    = 'Target and Subtarget HP bars - subtarget grows upward'
+addon.version = '.06'
+addon.desc    = 'Target and Subtarget HP bars'
 addon.commands = { 'targetbar', 'tbar' }
 
 require('common')

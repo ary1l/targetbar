@@ -11,14 +11,14 @@ local imgui = require('imgui')
 -- SETTINGS
 ------------------------------------------------------------
 local cfg = {
-    pos_x         = 600,
-    pos_y         = 400,
-    bar_width     = 250,
+    pos_x         = 1323,
+    pos_y         = 816,
+    bar_width     = 325,
     bar_height    = 14,
     show_distance = true,
     show_index    = false,
     show_hex      = false,
-    locked        = false,
+    locked        = true,
 }
 
 ------------------------------------------------------------
@@ -136,7 +136,31 @@ local function parse_target_data(tIdx, force_sub_brackets)
         name_color = COLOR_NPC
         is_real_npc = true
     else
-        name_color = COLOR_ENEMY
+        -- enemy: get claim status, low word = claimer server id
+        local claim_status = 0
+        local ok, cs = pcall(function() return entity:GetClaimStatus(tIdx) end)
+        if ok and cs then claim_status = bit.band(cs, 0xFFFF) end
+
+        local self_id_masked = bit.band(self_id, 0xFFFF)
+
+        if claim_status == 0 then
+            name_color = COLOR_ENEMY                        -- unclaimed: yellow
+        elseif claim_status == self_id_masked then
+            name_color = {1.00, 0.30, 0.30, 1.0}           -- your claim: red
+        else
+            local claimed_by_group = false
+            for sId_full, _ in pairs(members) do
+                if bit.band(sId_full, 0xFFFF) == claim_status then
+                    claimed_by_group = true
+                    break
+                end
+            end
+            if claimed_by_group then
+                name_color = {1.00, 0.30, 0.30, 1.0}       -- party/alliance claim: red
+            else
+                name_color = {0.83, 0.42, 0.83, 1.0}       -- someone else: purple
+            end
+        end
     end
 
     if dead then bar_color = COLOR_BAR_DEAD end
@@ -166,84 +190,9 @@ end
 
 ------------------------------------------------------------
 -- RENDER INDIVIDUAL BAR
--- Returns the rendered window height so subtarget can
--- position itself above the main bar.
 ------------------------------------------------------------
-local last_main_h  = 0
-local last_sub_h   = 0
-
-local function render_bar_panel(t, is_subtarget, win_id, pos_x, pos_y)
-    local bw = cfg.bar_width
-    local bh = is_subtarget and math.max(2, math.floor(cfg.bar_height / 2)) or cfg.bar_height
-
-    local flags = bit.bor(
-        ImGuiWindowFlags_NoDecoration,
-        ImGuiWindowFlags_AlwaysAutoResize,
-        ImGuiWindowFlags_NoFocusOnAppearing,
-        ImGuiWindowFlags_NoNav,
-        ImGuiWindowFlags_NoBackground,
-        ImGuiWindowFlags_NoMove          -- subtarget window is always auto-positioned
-    )
-
-    imgui.SetNextWindowPos({pos_x, pos_y}, ImGuiCond_Always)
-    imgui.SetNextWindowSize({bw + 16, 0}, ImGuiCond_Always)
-
-    if imgui.Begin(win_id, {true}, flags) then
-
-        local draw_list = imgui.GetWindowDrawList()
-        if draw_list then
-            local wx, wy = imgui.GetWindowPos()
-            local ww, wh = imgui.GetWindowSize()
-            draw_list:AddRectFilled({wx, wy}, {wx + ww, wy + wh}, COLOR_PANEL_BG, 4.0)
-        end
-
-        imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
-        imgui.SetCursorPosY(imgui.GetCursorPosY() + (is_subtarget and 0 or 2))
-
-        -- 1. Distance
-        if cfg.show_distance then
-            local d_col = {1.0, 1.0, 1.0, 1.0}
-            if t.dist <= 21.0 then d_col = {0.29, 1.00, 0.29, 1.0}
-            elseif t.dist <= 50.0 then d_col = {0.00, 0.78, 1.00, 1.0} end
-            imgui.TextColored(d_col, string.format('%.1f', t.dist))
-            imgui.SameLine()
-        end
-
-        -- 2. Name
-        local name_str = t.name
-        if t.is_locked    then name_str = '<' .. name_str .. '>' end
-        if cfg.show_index then name_str = name_str .. string.format(' [%d]', t.index) end
-        if cfg.show_hex   then name_str = name_str .. string.format(' (%X)', t.server_id) end
-        imgui.TextColored(t.name_color, name_str)
-
-        -- 3. HP Percentage
-        if not t.is_real_npc then
-            imgui.SameLine()
-            if t.dead then
-                imgui.TextColored({0.6, 0.2, 0.2, 1.0}, 'DEAD')
-            else
-                imgui.TextColored({0.8, 0.8, 0.8, 1.0}, string.format('%d%%', t.hp_pct))
-            end
-        end
-
-        -- 4. HP Bar
-        imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
-        local cursor_x, cursor_y = imgui.GetCursorScreenPos()
-        imgui.Dummy({bw, bh})
-
-        if draw_list then
-            draw_list:AddRectFilled({cursor_x, cursor_y}, {cursor_x + bw, cursor_y + bh}, COLOR_BAR_BG)
-            if not t.is_real_npc and t.hp_frac > 0 then
-                draw_list:AddRectFilled({cursor_x, cursor_y}, {cursor_x + (bw * t.hp_frac), cursor_y + bh}, t.bar_color)
-            end
-        end
-
-        -- capture height for next frame positioning
-        local _, wh = imgui.GetWindowSize()
-        if is_subtarget then last_sub_h = wh else last_main_h = wh end
-    end
-    imgui.End()
-end
+local last_main_h = 0
+local last_sub_h  = 0
 
 ------------------------------------------------------------
 -- CORE ENGINE LOOP
@@ -256,14 +205,14 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local targ = mm:GetTarget()
     if not targ then return end
 
-    local main_idx      = targ:GetTargetIndex(0)
+    local main_idx       = targ:GetTargetIndex(0)
     local sub_active_raw = targ:GetIsSubTargetActive()
     local is_sub_active  = (sub_active_raw ~= nil and sub_active_raw ~= 0 and sub_active_raw ~= false)
     local sub_idx        = is_sub_active and targ:GetTargetIndex(1) or 0
 
     if main_idx == 0 and sub_idx == 0 then return end
 
-    -- Main bar always at cfg.pos_x / cfg.pos_y — never moves
+    -- Main bar always at cfg.pos_x / cfg.pos_y
     if main_idx ~= 0 then
         local main_data = parse_target_data(main_idx, false)
         if main_data then
@@ -335,11 +284,11 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         end
     end
 
-    -- Subtarget bar renders in a SEPARATE window positioned above the main bar
+    -- Subtarget bar above main
     if is_sub_active and sub_idx ~= 0 and sub_idx ~= main_idx then
         local sub_data = parse_target_data(sub_idx, true)
         if sub_data then
-            local gap  = 4
+            local gap   = 4
             local sub_y = cfg.pos_y - last_sub_h - gap
 
             local sub_flags = bit.bor(

@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '.06'
+addon.version = '.07'
 addon.desc    = 'Target and Subtarget HP bars'
 addon.commands = { 'targetbar', 'tbar' }
 
@@ -22,7 +22,17 @@ local cfg = {
 }
 
 ------------------------------------------------------------
--- COLORS
+-- LUA OPTIMIZATIONS
+------------------------------------------------------------
+local math_sqrt  = math.sqrt
+local math_max   = math.max
+local math_min   = math.min
+local math_floor = math.floor
+local bit_band   = bit.band
+local str_format = string.format
+
+------------------------------------------------------------
+-- COLORS (computed once at load)
 ------------------------------------------------------------
 local COLOR_PANEL_BG = imgui.GetColorU32({0.05, 0.05, 0.05, 0.65})
 local COLOR_BAR_BG   = imgui.GetColorU32({0.18, 0.18, 0.18, 0.85})
@@ -34,6 +44,13 @@ local COLOR_PC_PARTY = {0.27, 0.78, 1.00, 1.0}
 local COLOR_PC_ALLY  = {0.62, 0.89, 1.00, 1.0}
 local COLOR_PC_OTHER = {0.80, 0.90, 1.00, 1.0}
 local COLOR_ENEMY    = {0.97, 0.93, 0.55, 1.0}
+local COLOR_CLAIM    = {1.00, 0.30, 0.30, 1.0}
+local COLOR_STEALTH  = {0.83, 0.42, 0.83, 1.0}
+local COLOR_DEAD_TXT = {0.60, 0.20, 0.20, 1.0}
+local COLOR_HP_TXT   = {0.80, 0.80, 0.80, 1.0}
+local COLOR_DIST_FAR = {1.00, 1.00, 1.00, 1.0}
+local COLOR_DIST_MID = {0.00, 0.78, 1.00, 1.0}
+local COLOR_DIST_NEAR= {0.29, 1.00, 0.29, 1.0}
 
 local HP_GRADIENT = {
     { at=1.00, r=0.12, g=0.55, b=0.12 },
@@ -43,33 +60,34 @@ local HP_GRADIENT = {
     { at=0.00, r=0.90, g=0.10, b=0.10 },
 }
 
-------------------------------------------------------------
--- HP GRADIENT
-------------------------------------------------------------
-local function hp_bar_color(frac)
-    local col = {0.90, 0.10, 0.10, 1.0}
-    if frac >= 1.0 then
-        col = {0.12, 0.55, 0.12, 1.0}
-    elseif frac <= 0.0 then
-        col = {0.90, 0.10, 0.10, 1.0}
-    else
-        for i = 1, #HP_GRADIENT - 1 do
-            local hi = HP_GRADIENT[i]
-            local lo = HP_GRADIENT[i + 1]
-            if frac <= hi.at and frac >= lo.at then
-                local range = hi.at - lo.at
-                local t = range > 0 and (frac - lo.at) / range or 0
-                col = {
-                    lo.r + (hi.r - lo.r) * t,
-                    lo.g + (hi.g - lo.g) * t,
-                    lo.b + (hi.b - lo.b) * t,
-                    1.0
-                }
-                break
+-- Pre-bake 101 gradient steps (0–100%) so hp_bar_color is a table lookup
+-- instead of a branch-heavy interpolation every frame.
+local HP_COLOR_LUT = {}
+do
+    local function lerp(a, b, t) return a + (b - a) * t end
+    for pct = 0, 100 do
+        local frac = pct / 100.0
+        local col = {0.90, 0.10, 0.10, 1.0}
+        if frac >= 1.0 then
+            col = {0.12, 0.55, 0.12, 1.0}
+        else
+            for i = 1, #HP_GRADIENT - 1 do
+                local hi = HP_GRADIENT[i]
+                local lo = HP_GRADIENT[i + 1]
+                if frac <= hi.at and frac >= lo.at then
+                    local range = hi.at - lo.at
+                    local t = range > 0 and (frac - lo.at) / range or 0
+                    col = { lerp(lo.r, hi.r, t), lerp(lo.g, hi.g, t), lerp(lo.b, hi.b, t), 1.0 }
+                    break
+                end
             end
         end
+        HP_COLOR_LUT[pct] = imgui.GetColorU32(col)
     end
-    return imgui.GetColorU32(col)
+end
+
+local function hp_bar_color(hp_pct)
+    return HP_COLOR_LUT[math_max(0, math_min(100, hp_pct))]
 end
 
 ------------------------------------------------------------
@@ -77,99 +95,102 @@ end
 ------------------------------------------------------------
 local mm = AshitaCore:GetMemoryManager()
 
-local function get_party_server_ids()
+-- Party membership cache — rebuilt every SCAN_INTERVAL seconds,
+-- not every frame, since party composition changes rarely.
+local SCAN_INTERVAL  = 1.0
+local last_scan_time = 0
+local party_id_cache = {}  -- [sId] = 'party' | 'alliance'
+local self_id_cache  = 0
+
+local function refresh_party_cache(now)
+    if now - last_scan_time < SCAN_INTERVAL then return end
+    last_scan_time = now
     local party = mm:GetParty()
-    local ids = {}
+    party_id_cache = {}
+    self_id_cache  = party:GetMemberServerId(0) or 0
     for i = 0, 17 do
         if party:GetMemberIsActive(i) ~= 0 then
             local sId = party:GetMemberServerId(i)
             if sId and sId ~= 0 then
-                ids[sId] = (i < 6) and 'party' or 'alliance'
+                party_id_cache[sId] = (i < 6) and 'party' or 'alliance'
             end
         end
     end
-    return ids
 end
 
-local function parse_target_data(tIdx, force_sub_brackets)
-    local entity = mm:GetEntity()
-    local party  = mm:GetParty()
-    local targ   = mm:GetTarget()
+local WIN_FLAGS = bit.bor(
+    ImGuiWindowFlags_NoDecoration,
+    ImGuiWindowFlags_AlwaysAutoResize,
+    ImGuiWindowFlags_NoFocusOnAppearing,
+    ImGuiWindowFlags_NoNav,
+    ImGuiWindowFlags_NoBackground
+)
+local WIN_FLAGS_LOCKED = bit.bor(WIN_FLAGS, ImGuiWindowFlags_NoMove)
 
+local function parse_target_data(tIdx, force_sub_brackets)
     if not tIdx or tIdx == 0 then return nil end
+
+    local entity = mm:GetEntity()
+    local targ   = mm:GetTarget()
 
     local sId = entity:GetServerId(tIdx)
     if not sId or sId == 0 then return nil end
 
-    local name   = entity:GetName(tIdx)       or '???'
-    local hp_pct = entity:GetHPPercent(tIdx)  or 0
+    local name   = entity:GetName(tIdx)      or '???'
+    local hp_pct = entity:GetHPPercent(tIdx) or 0
     local spawn  = entity:GetSpawnFlags(tIdx) or 0
+    local dist   = math_sqrt(entity:GetDistance(tIdx) or 0)
 
-    local dist_raw = entity:GetDistance(tIdx) or 0
-    local dist = math.sqrt(dist_raw)
+    local is_pc  = (bit_band(spawn, 0x01) ~= 0)
+    local is_npc = (bit_band(spawn, 0x02) ~= 0)
+    local is_mob = (bit_band(spawn, 0x10) ~= 0)
 
-    local is_pc  = (bit.band(spawn, 0x01) ~= 0)
-    local is_npc = (bit.band(spawn, 0x02) ~= 0)
-    local is_mob = (bit.band(spawn, 0x10) ~= 0)
-
-    local self_id = party:GetMemberServerId(0)
-    local members = get_party_server_ids()
-
-    local hp_frac = math.max(0.0, math.min(1.0, hp_pct / 100.0))
-    local dead    = (hp_pct == 0)
-
+    local hp_frac    = math_max(0.0, math_min(1.0, hp_pct / 100.0))
+    local dead       = (hp_pct == 0)
+    local bar_color  = hp_bar_color(hp_pct)
     local name_color
-    local bar_color = hp_bar_color(hp_frac)
     local is_real_npc = false
 
     if is_pc then
-        if sId == self_id then
+        if sId == self_id_cache then
             name_color = COLOR_PC_SELF
-        elseif members[sId] == 'party' then
+        elseif party_id_cache[sId] == 'party' then
             name_color = COLOR_PC_PARTY
-        elseif members[sId] == 'alliance' then
+        elseif party_id_cache[sId] == 'alliance' then
             name_color = COLOR_PC_ALLY
         else
             name_color = COLOR_PC_OTHER
         end
     elseif is_npc and not is_mob then
-        name_color = COLOR_NPC
-        is_real_npc = true
+        name_color    = COLOR_NPC
+        is_real_npc   = true
     else
-        -- enemy: get claim status, low word = claimer server id
         local claim_status = 0
         local ok, cs = pcall(function() return entity:GetClaimStatus(tIdx) end)
-        if ok and cs then claim_status = bit.band(cs, 0xFFFF) end
-
-        local self_id_masked = bit.band(self_id, 0xFFFF)
+        if ok and cs then claim_status = bit_band(cs, 0xFFFF) end
 
         if claim_status == 0 then
-            name_color = COLOR_ENEMY                        -- unclaimed: yellow
-        elseif claim_status == self_id_masked then
-            name_color = {1.00, 0.30, 0.30, 1.0}           -- your claim: red
+            name_color = COLOR_ENEMY
+        elseif claim_status == bit_band(self_id_cache, 0xFFFF) then
+            name_color = COLOR_CLAIM
         else
-            local claimed_by_group = false
-            for sId_full, _ in pairs(members) do
-                if bit.band(sId_full, 0xFFFF) == claim_status then
-                    claimed_by_group = true
-                    break
+            local by_group = false
+            for sid_full in pairs(party_id_cache) do
+                if bit_band(sid_full, 0xFFFF) == claim_status then
+                    by_group = true; break
                 end
             end
-            if claimed_by_group then
-                name_color = {1.00, 0.30, 0.30, 1.0}       -- party/alliance claim: red
-            else
-                name_color = {0.83, 0.42, 0.83, 1.0}       -- someone else: purple
-            end
+            name_color = by_group and COLOR_CLAIM or COLOR_STEALTH
         end
     end
 
     if dead then bar_color = COLOR_BAR_DEAD end
 
-    local is_locked = false
-    if not force_sub_brackets and type(targ.GetLockedOnFlags) == 'function' then
-        local flags = targ:GetLockedOnFlags()
-        if type(flags) == 'number' then
-            is_locked = (bit.band(flags, 0x01) ~= 0)
+    local is_locked = force_sub_brackets
+    if not force_sub_brackets then
+        local ok2, flags = pcall(function() return targ:GetLockedOnFlags() end)
+        if ok2 and type(flags) == 'number' then
+            is_locked = (bit_band(flags, 0x01) ~= 0)
         end
     end
 
@@ -184,20 +205,81 @@ local function parse_target_data(tIdx, force_sub_brackets)
         index       = tIdx,
         server_id   = sId,
         is_real_npc = is_real_npc,
-        is_locked   = is_locked or force_sub_brackets,
+        is_locked   = is_locked,
     }
 end
 
 ------------------------------------------------------------
--- RENDER INDIVIDUAL BAR
+-- DRAW BAR (shared for main + sub)
 ------------------------------------------------------------
-local last_main_h = 0
-local last_sub_h  = 0
+local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub)
+    local flags = cfg.locked and WIN_FLAGS_LOCKED or WIN_FLAGS
+    if is_sub then flags = bit.bor(flags, ImGuiWindowFlags_NoMove) end
+
+    imgui.SetNextWindowPos({pos_x, pos_y}, ImGuiCond_Always)
+    imgui.SetNextWindowSize({cfg.bar_width + 16, 0}, ImGuiCond_Always)
+
+    local win_h = 0
+    if imgui.Begin(win_id, {true}, flags) then
+        local draw_list = imgui.GetWindowDrawList()
+        if draw_list then
+            local wx, wy = imgui.GetWindowPos()
+            local ww, wh = imgui.GetWindowSize()
+            draw_list:AddRectFilled({wx, wy}, {wx + ww, wy + wh}, COLOR_PANEL_BG, 4.0)
+        end
+
+        imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
+        if not is_sub then imgui.SetCursorPosY(imgui.GetCursorPosY() + 2) end
+
+        if cfg.show_distance then
+            local d_col = data.dist <= 21.0 and COLOR_DIST_NEAR
+                       or data.dist <= 50.0 and COLOR_DIST_MID
+                       or COLOR_DIST_FAR
+            imgui.TextColored(d_col, str_format('%.1f', data.dist))
+            imgui.SameLine()
+        end
+
+        local name_str = data.is_locked and ('<' .. data.name .. '>') or data.name
+        if cfg.show_index then name_str = name_str .. str_format(' [%d]', data.index) end
+        if cfg.show_hex   then name_str = name_str .. str_format(' (%X)', data.server_id) end
+        imgui.TextColored(data.name_color, name_str)
+
+        if not data.is_real_npc then
+            imgui.SameLine()
+            if data.dead then
+                imgui.TextColored(COLOR_DEAD_TXT, 'DEAD')
+            else
+                imgui.TextColored(COLOR_HP_TXT, str_format('%d%%', data.hp_pct))
+            end
+        end
+
+        imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
+        local cx, cy = imgui.GetCursorScreenPos()
+        local bw = cfg.bar_width
+        imgui.Dummy({bw, bar_h})
+        if draw_list then
+            draw_list:AddRectFilled({cx, cy}, {cx + bw, cy + bar_h}, COLOR_BAR_BG)
+            if not data.is_real_npc and data.hp_frac > 0 then
+                draw_list:AddRectFilled({cx, cy}, {cx + bw * data.hp_frac, cy + bar_h}, data.bar_color)
+            end
+        end
+
+        if not cfg.locked and not is_sub then
+            cfg.pos_x, cfg.pos_y = imgui.GetWindowPos()
+        end
+
+        local _, wh = imgui.GetWindowSize()
+        win_h = wh
+    end
+    imgui.End()
+    return win_h
+end
 
 ------------------------------------------------------------
 -- CORE ENGINE LOOP
 ------------------------------------------------------------
-local show_ui = { true }
+local show_ui    = { true }
+local last_sub_h = 0
 
 ashita.events.register('d3d_present', 'targetbar_render', function()
     if not show_ui[1] then return end
@@ -212,144 +294,23 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
 
     if main_idx == 0 and sub_idx == 0 then return end
 
-    -- Main bar always at cfg.pos_x / cfg.pos_y
+    -- Refresh party cache on its own interval, not every render frame
+    refresh_party_cache(os.clock())
+
+    local main_h = 0
     if main_idx ~= 0 then
         local main_data = parse_target_data(main_idx, false)
         if main_data then
-            local flags = bit.bor(
-                ImGuiWindowFlags_NoDecoration,
-                ImGuiWindowFlags_AlwaysAutoResize,
-                ImGuiWindowFlags_NoFocusOnAppearing,
-                ImGuiWindowFlags_NoNav,
-                ImGuiWindowFlags_NoBackground
-            )
-            if cfg.locked then flags = bit.bor(flags, ImGuiWindowFlags_NoMove) end
-
-            imgui.SetNextWindowPos({cfg.pos_x, cfg.pos_y}, ImGuiCond_Once)
-            imgui.SetNextWindowSize({cfg.bar_width + 16, 0}, ImGuiCond_Always)
-
-            if imgui.Begin('##targetbar_main', show_ui, flags) then
-                local draw_list = imgui.GetWindowDrawList()
-                if draw_list then
-                    local wx, wy = imgui.GetWindowPos()
-                    local ww, wh = imgui.GetWindowSize()
-                    draw_list:AddRectFilled({wx, wy}, {wx + ww, wy + wh}, COLOR_PANEL_BG, 4.0)
-                end
-
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
-                imgui.SetCursorPosY(imgui.GetCursorPosY() + 2)
-
-                if cfg.show_distance then
-                    local d_col = {1.0,1.0,1.0,1.0}
-                    if main_data.dist <= 21.0 then d_col = {0.29,1.00,0.29,1.0}
-                    elseif main_data.dist <= 50.0 then d_col = {0.00,0.78,1.00,1.0} end
-                    imgui.TextColored(d_col, string.format('%.1f', main_data.dist))
-                    imgui.SameLine()
-                end
-
-                local name_str = main_data.name
-                if main_data.is_locked then name_str = '<' .. name_str .. '>' end
-                if cfg.show_index then name_str = name_str .. string.format(' [%d]', main_data.index) end
-                if cfg.show_hex   then name_str = name_str .. string.format(' (%X)', main_data.server_id) end
-                imgui.TextColored(main_data.name_color, name_str)
-
-                if not main_data.is_real_npc then
-                    imgui.SameLine()
-                    if main_data.dead then
-                        imgui.TextColored({0.6,0.2,0.2,1.0}, 'DEAD')
-                    else
-                        imgui.TextColored({0.8,0.8,0.8,1.0}, string.format('%d%%', main_data.hp_pct))
-                    end
-                end
-
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
-                local cx, cy = imgui.GetCursorScreenPos()
-                local bw, bh = cfg.bar_width, cfg.bar_height
-                imgui.Dummy({bw, bh})
-                if draw_list then
-                    draw_list:AddRectFilled({cx,cy},{cx+bw,cy+bh},COLOR_BAR_BG)
-                    if not main_data.is_real_npc and main_data.hp_frac > 0 then
-                        draw_list:AddRectFilled({cx,cy},{cx+bw*main_data.hp_frac,cy+bh},main_data.bar_color)
-                    end
-                end
-
-                local _, wh = imgui.GetWindowSize()
-                last_main_h = wh
-
-                if not cfg.locked then
-                    cfg.pos_x, cfg.pos_y = imgui.GetWindowPos()
-                end
-            end
-            imgui.End()
+            main_h = draw_bar(main_data, '##targetbar_main', cfg.pos_x, cfg.pos_y, cfg.bar_height, false)
         end
     end
 
-    -- Subtarget bar above main
     if is_sub_active and sub_idx ~= 0 and sub_idx ~= main_idx then
         local sub_data = parse_target_data(sub_idx, true)
         if sub_data then
-            local gap   = 4
-            local sub_y = cfg.pos_y - last_sub_h - gap
-
-            local sub_flags = bit.bor(
-                ImGuiWindowFlags_NoDecoration,
-                ImGuiWindowFlags_AlwaysAutoResize,
-                ImGuiWindowFlags_NoFocusOnAppearing,
-                ImGuiWindowFlags_NoNav,
-                ImGuiWindowFlags_NoBackground,
-                ImGuiWindowFlags_NoMove
-            )
-
-            imgui.SetNextWindowPos({cfg.pos_x, sub_y}, ImGuiCond_Always)
-            imgui.SetNextWindowSize({cfg.bar_width + 16, 0}, ImGuiCond_Always)
-
-            if imgui.Begin('##targetbar_sub', {true}, sub_flags) then
-                local draw_list = imgui.GetWindowDrawList()
-                if draw_list then
-                    local wx, wy = imgui.GetWindowPos()
-                    local ww, wh = imgui.GetWindowSize()
-                    draw_list:AddRectFilled({wx,wy},{wx+ww,wy+wh},COLOR_PANEL_BG,4.0)
-                end
-
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
-
-                if cfg.show_distance then
-                    local d_col = {1.0,1.0,1.0,1.0}
-                    if sub_data.dist <= 21.0 then d_col = {0.29,1.00,0.29,1.0}
-                    elseif sub_data.dist <= 50.0 then d_col = {0.00,0.78,1.00,1.0} end
-                    imgui.TextColored(d_col, string.format('%.1f', sub_data.dist))
-                    imgui.SameLine()
-                end
-
-                local name_str = sub_data.name
-                if sub_data.is_locked then name_str = '<' .. name_str .. '>' end
-                imgui.TextColored(sub_data.name_color, name_str)
-
-                if not sub_data.is_real_npc then
-                    imgui.SameLine()
-                    if sub_data.dead then
-                        imgui.TextColored({0.6,0.2,0.2,1.0}, 'DEAD')
-                    else
-                        imgui.TextColored({0.8,0.8,0.8,1.0}, string.format('%d%%', sub_data.hp_pct))
-                    end
-                end
-
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
-                local cx, cy = imgui.GetCursorScreenPos()
-                local bw = cfg.bar_width
-                local bh = math.max(2, math.floor(cfg.bar_height / 2))
-                imgui.Dummy({bw, bh})
-                if draw_list then
-                    draw_list:AddRectFilled({cx,cy},{cx+bw,cy+bh},COLOR_BAR_BG)
-                    if not sub_data.is_real_npc and sub_data.hp_frac > 0 then
-                        draw_list:AddRectFilled({cx,cy},{cx+bw*sub_data.hp_frac,cy+bh},sub_data.bar_color)
-                    end
-                end
-
-                local _, wh = imgui.GetWindowSize()
-                last_sub_h = wh
-            end
-            imgui.End()
+            local sub_bh = math_max(2, math_floor(cfg.bar_height / 2))
+            local sub_y  = cfg.pos_y - last_sub_h - 4
+            last_sub_h   = draw_bar(sub_data, '##targetbar_sub', cfg.pos_x, sub_y, sub_bh, true)
         end
     end
 end)

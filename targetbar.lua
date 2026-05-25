@@ -1,8 +1,8 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
 addon.version = '1.1'
-addon.desc    = 'Target HP Bar w/ Cast Bar (Optimized)'
-addon.commands = { 'targetbar', 'tbar' }
+addon.desc    = 'Target HP Bar w/ Cast Bar'
+addon.commands = { 'targetbar' }
 
 require('common')
 local imgui    = require('imgui')
@@ -47,8 +47,7 @@ ashita.events.register('settings', 'settings_update', function(s)
 end)
 
 local CAST_BAR_HEIGHT   = 8
--- Adjusted duration for staying visible
-local INSTANT_FLASH_DUR = 2.0 
+local INSTANT_FLASH_DUR = 2.5 
 
 -- Logic Throttling Variables
 local UPDATE_INTERVAL   = 0.1 
@@ -509,7 +508,7 @@ ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
 end)
 
 ------------------------------------------------------------
--- CORE MAIN RENDERING PROCESS LOOP (Optimized)
+-- CORE MAIN RENDERING PROCESS LOOP
 ------------------------------------------------------------
 local show_ui = { true }
 local last_cast_h = 0
@@ -521,7 +520,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
 
     local now = os_clock()
     
-    -- Cast Bar Logic (Independent of target data, runs every frame for smooth bar)
+    -- Cast Bar Logic (Independent of target data)
     local cast_frac = 0.0
     local castbar = mm:GetCastBar()
     if castbar then
@@ -554,7 +553,6 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         last_cast_h = 0
     end
 
-    -- THROTTLED TARGET DATA LOGIC
     local targ = mm:GetTarget()
     if not targ then return end
     local main_idx = targ:GetTargetIndex(0)
@@ -574,7 +572,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         sub_data  = (sub_idx ~= 0 and sub_idx ~= main_idx) and parse_target_data(sub_idx, sub_target_cache, true) or nil
     end
 
-    -- Rendering from cached data (High performance)
+    -- Rendering from cached data
     local current_y = cfg.pos_y
     if sub_data then
         local sub_bh = math_max(2, math_floor(cfg.bar_height / 2))

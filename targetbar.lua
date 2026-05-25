@@ -1,7 +1,7 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '1.0'
-addon.desc    = 'Target HP Bar w/ Cast Bar'
+addon.version = '1.1'
+addon.desc    = 'Target HP Bar w/ Cast Bar (Optimized)'
 addon.commands = { 'targetbar', 'tbar' }
 
 require('common')
@@ -9,7 +9,7 @@ local imgui    = require('imgui')
 local settings = require('settings')
 
 ------------------------------------------------------------
--- LUA & BACKEND OPTIMIZATIONS (Fast Local Upvalues)
+-- LUA & BACKEND OPTIMIZATIONS
 ------------------------------------------------------------
 local os_clock   = os.clock
 local type       = type
@@ -47,10 +47,17 @@ ashita.events.register('settings', 'settings_update', function(s)
 end)
 
 local CAST_BAR_HEIGHT   = 8
-local INSTANT_FLASH_DUR = 2.0
+-- Adjusted duration for staying visible
+local INSTANT_FLASH_DUR = 2.0 
+
+-- Logic Throttling Variables
+local UPDATE_INTERVAL   = 0.1 
+local last_logic_update = 0
+local last_main_idx     = 0
+local last_sub_idx      = 0
 
 ------------------------------------------------------------
--- PRE-ALLOCATED UI VECTORS (Eliminates GC stutter in Render Loop)
+-- PRE-ALLOCATED UI VECTORS
 ------------------------------------------------------------
 local v_pos  = { 0, 0 }
 local v_size = { 0, 0 }
@@ -120,7 +127,7 @@ local WIN_FLAGS_LOCKED = bit_bor(WIN_FLAGS, ImGuiWindowFlags_NoMove)
 local WIN_FLAGS_CAST   = bit_bor(WIN_FLAGS, ImGuiWindowFlags_NoMove)
 
 ------------------------------------------------------------
--- COLORS & STATIC GRADIENT LOOKUP TABLE
+-- COLORS & LOOKUP TABLES
 ------------------------------------------------------------
 local COLOR_PANEL_BG  = imgui.GetColorU32({0.05, 0.05, 0.05, 0.65})
 local COLOR_BAR_BG    = imgui.GetColorU32({0.18, 0.18, 0.18, 0.85})
@@ -174,12 +181,12 @@ do
 end
 
 ------------------------------------------------------------
--- PARSE TARGET DATA (With String Caching)
+-- PARSE TARGET DATA
 ------------------------------------------------------------
 local function parse_target_data(tIdx, out_cache, force_sub_brackets)
     if not tIdx or tIdx == 0 then return nil end
     local entity = mm:GetEntity()
-    local targ   = mm:GetTarget()
+    local targ    = mm:GetTarget()
     if not entity or not targ then return nil end
 
     local sId = entity:GetServerId(tIdx)
@@ -198,7 +205,7 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets)
     local is_real_npc = false
 
     if is_pc then
-        if      sId == self_id_cache        then name_color = COLOR_PC_SELF
+        if     sId == self_id_cache       then name_color = COLOR_PC_SELF
         elseif party_id_cache[sId] == 'party'    then name_color = COLOR_PC_PARTY
         elseif party_id_cache[sId] == 'alliance' then name_color = COLOR_PC_ALLY
         else                                          name_color = COLOR_PC_OTHER end
@@ -259,7 +266,7 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets)
 end
 
 ------------------------------------------------------------
--- DRAW TARGET BAR
+-- DRAW FUNCTIONS
 ------------------------------------------------------------
 local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, spell_name)
     local flags = cfg.locked and WIN_FLAGS_LOCKED or WIN_FLAGS
@@ -328,9 +335,6 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, spell_name)
     return win_h
 end
 
-------------------------------------------------------------
--- DRAW CAST BAR
-------------------------------------------------------------
 local function draw_cast_bar(cast_frac, pos_x, pos_y, is_instant)
     imgui.SetNextWindowPos(set_vec(v_pos, pos_x, pos_y), ImGuiCond_Always)
     imgui.SetNextWindowSize(set_vec(v_size, cfg.bar_width + 16, 0), ImGuiCond_Always)
@@ -377,7 +381,6 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y, is_instant)
                 end
             end
         else
-            -- Add minor padding for instant abilities so the text block doesn't look squished
             imgui.Dummy(set_vec(v_size, 0, 2))
         end
 
@@ -389,7 +392,7 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y, is_instant)
 end
 
 ------------------------------------------------------------
--- STATE HISTORY BUFFER
+-- LOGIC & HOOKS
 ------------------------------------------------------------
 local cast_history  = {}
 local history_count = 0
@@ -402,149 +405,101 @@ local function get_cast_pct()
     return 0
 end
 
-------------------------------------------------------------
--- OUTGOING PACKET HOOK
-------------------------------------------------------------
 ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
-    
     if e.id == 0x1A and e.size < 0x0E then return end
     if e.id == 0x37 and e.size < 0x0A then return end
-
     if e.id == 0x1A then
         local current_pct = get_cast_pct()
         if current_pct > 0.0 and current_pct < 0.99 then return end
     end
-
-    local target_idx  = 0
+    local target_idx = 0
     local action_name = ''
-    local is_item     = false
-    local is_instant  = false
+    local is_item = false
+    local is_instant = false
 
     if e.id == 0x1A then
-        target_idx      = struct.unpack('H', e.data_modified, 0x08 + 1)
+        target_idx = struct.unpack('H', e.data_modified, 0x08 + 1)
         local action_id = struct.unpack('H', e.data_modified, 0x0C + 1)
-        local category  = struct.unpack('H', e.data_modified, 0x0A + 1)
-
-        if category == 3 then -- Magic
+        local category = struct.unpack('H', e.data_modified, 0x0A + 1)
+        if category == 3 then
             local res = rm:GetSpellById(action_id)
             action_name = (res and res.Name and (res.Name[1] or res.Name[0])) or ''
             is_instant = false
-        elseif category == 7 then -- Weaponskill
+        elseif category == 7 then
             local res = rm:GetAbilityById(action_id)
-            if res and res.Name then
-                action_name = res.Name[1] or res.Name[0]
-            end
+            if res and res.Name then action_name = res.Name[1] or res.Name[0] end
             is_instant = true
-        elseif category == 9 or category == 14 then -- Job Ability / Unblinkable JA
+        elseif category == 9 or category == 14 then
             local res = rm:GetAbilityById(action_id + 512)
-            if res and res.Name then
-                action_name = res.Name[1] or res.Name[0]
-            end
+            if res and res.Name then action_name = res.Name[1] or res.Name[0] end
             is_instant = true
-        elseif category == 5 then -- Item (Finished Cast)
+        elseif category == 5 then
             action_name = 'Item'
             is_item = true
             is_instant = false
-        else
-            -- Fallback
-            local res_spell = rm:GetSpellById(action_id)
-            if res_spell and res_spell.Name then
-                action_name = res_spell.Name[1] or res_spell.Name[0]
-                is_instant = false
-            else
-                local res_abil = rm:GetAbilityById(action_id + 512)
-                if res_abil and res_abil.Name then
-                    action_name = res_abil.Name[1] or res_abil.Name[0]
-                    is_instant = true
-                else
-                    local res_ws = rm:GetAbilityById(action_id)
-                    if res_ws and res_ws.Name then
-                        action_name = res_ws.Name[1] or res_ws.Name[0]
-                        is_instant = true
-                    end
-                end
-            end
         end
-
-    elseif e.id == 0x37 then -- Item (Started Cast)
-        target_idx  = struct.unpack('H', e.data_modified, 0x08 + 1)
-        
+    elseif e.id == 0x37 then
+        target_idx = struct.unpack('H', e.data_modified, 0x08 + 1)
         action_name = 'Item'
-        is_item     = true
-        is_instant  = false
+        is_item = true
+        is_instant = false
     end
 
     if action_name == '' or action_name == 'Gil' then return end
-
     local entity = mm:GetEntity()
     local target_name = 'Self'
     local target_color = COLOR_PC_SELF
-
     if target_idx ~= 0 and entity then
         local tdata = parse_target_data(target_idx, packet_target_cache, false)
-        target_name  = entity:GetName(target_idx) or 'Unknown'
+        target_name = entity:GetName(target_idx) or 'Unknown'
         target_color = (tdata and tdata.name_color) or {1,1,1,1}
     end
 
-    cast_state.name        = action_name
-    cast_state.target      = target_name
-    cast_state.target_color= target_color
-    cast_state.target_idx  = target_idx
-    cast_state.is_item     = is_item
-    cast_state.is_instant  = is_instant
+    cast_state.name = action_name
+    cast_state.target = target_name
+    cast_state.target_color = target_color
+    cast_state.target_idx = target_idx
+    cast_state.is_item = is_item
+    cast_state.is_instant = is_instant
     cast_state.queued_time = os_clock()
 
     history_count = history_count + 1
     if not cast_history[history_count] then cast_history[history_count] = {} end
-    
     local entry = cast_history[history_count]
-    entry.name         = cast_state.name
-    entry.target       = cast_state.target
+    entry.name = cast_state.name
+    entry.target = cast_state.target
     entry.target_color = cast_state.target_color
-    entry.target_idx   = cast_state.target_idx
-    entry.is_item      = cast_state.is_item
-    entry.is_instant   = cast_state.is_instant
-    entry.time         = cast_state.queued_time
+    entry.target_idx = cast_state.target_idx
+    entry.is_item = cast_state.is_item
+    entry.is_instant = cast_state.is_instant
+    entry.time = cast_state.queued_time
 end)
-------------------------------------------------------------
--- INCOMING PACKET HOOK
-------------------------------------------------------------
-local REJECT_MSGS = {
-    [12] = true, [17] = true, [34] = true, [47] = true, 
-    [71] = true, [87] = true, [88] = true, [94] = true, 
-    [190]= true, [248]= true, [284]= true, [313]= true
-}
 
+local REJECT_MSGS = { [12]=true,[17]=true,[34]=true,[47]=true,[71]=true,[87]=true,[88]=true,[94]=true,[190]=true,[248]=true,[284]=true,[313]=true }
 ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
     if e.id ~= 0x17 or e.size < 0x1A then return end 
-    
     local msg_id = struct.unpack('H', e.data, 0x18 + 1)
-    
     if msg_id == 16 or msg_id == 29 then
         cast_state.name = ''
         cast_state.queued_time = 0
         history_count = 0
-        
     elseif REJECT_MSGS[msg_id] then
         if history_count > 0 then history_count = history_count - 1 end
-        
         local restored = false
-        
         if history_count > 0 then
             local prev = cast_history[history_count]
             if (os_clock() - prev.time) < 15.0 and get_cast_pct() > 0 then
-                cast_state.name        = prev.name
-                cast_state.target      = prev.target
-                cast_state.target_color= prev.target_color
-                cast_state.target_idx  = prev.target_idx
-                cast_state.is_item     = prev.is_item
-                cast_state.is_instant  = prev.is_instant
+                cast_state.name = prev.name
+                cast_state.target = prev.target
+                cast_state.target_color = prev.target_color
+                cast_state.target_idx = prev.target_idx
+                cast_state.is_item = prev.is_item
+                cast_state.is_instant = prev.is_instant
                 cast_state.queued_time = prev.time
                 restored = true
             end
         end
-        
         if not restored then
             cast_state.name = ''
             cast_state.queued_time = 0
@@ -554,77 +509,75 @@ ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
 end)
 
 ------------------------------------------------------------
--- CORE MAIN RENDERING PROCESS LOOP
+-- CORE MAIN RENDERING PROCESS LOOP (Optimized)
 ------------------------------------------------------------
-local show_ui     = { true }
+local show_ui = { true }
 local last_cast_h = 0
+local main_data = nil
+local sub_data  = nil
 
 ashita.events.register('d3d_present', 'targetbar_render', function()
     if not show_ui[1] then return end
 
     local now = os_clock()
+    
+    -- Cast Bar Logic (Independent of target data, runs every frame for smooth bar)
     local cast_frac = 0.0
     local castbar = mm:GetCastBar()
-    
     if castbar then
         local ok, pct = pcall(function() return castbar:GetPercent() end)
-        if ok and pct and pct > 0 then
-            cast_frac = math_min(1.0, pct)
-        end
+        if ok and pct and pct > 0 then cast_frac = math_min(1.0, pct) end
     end
 
     if cast_frac > 0 then
         if cast_frac ~= cast_state.last_pct then
-            cast_state.last_pct  = cast_frac
+            cast_state.last_pct = cast_frac
             cast_state.last_tick = now
         else
             local timeout = (cast_frac >= 0.99) and 0.2 or 0.75
-            if (now - cast_state.last_tick) > timeout then
-                cast_frac = 0.0
-            end
+            if (now - cast_state.last_tick) > timeout then cast_frac = 0.0 end
         end
     else
-        cast_state.last_pct  = 0
+        cast_state.last_pct = 0
         cast_state.last_tick = now
     end
 
-    local show_instant = (cast_frac == 0.0
-        and cast_state.name ~= ''
-        and (now - cast_state.queued_time) < INSTANT_FLASH_DUR)
+    local show_instant = (cast_frac == 0.0 and cast_state.name ~= '' and (now - cast_state.queued_time) < INSTANT_FLASH_DUR)
 
-    if cast_frac == 0.0 and not show_instant then
-        cast_state.name = ''
-    end
-
-    -- Treat instant cast visual fractions as 0 (we only want text)
+    if cast_frac == 0.0 and not show_instant then cast_state.name = '' end
     local display_frac = show_instant and (cast_state.is_instant and 0.0 or 1.0) or cast_frac
 
     if (display_frac > 0 or show_instant) and cast_state.name ~= '' then
         local cast_y = cfg.pos_y - last_cast_h - 4
-        last_cast_h  = draw_cast_bar(display_frac, cfg.pos_x, cast_y, cast_state.is_instant)
+        last_cast_h = draw_cast_bar(display_frac, cfg.pos_x, cast_y, cast_state.is_instant)
     else
         last_cast_h = 0
     end
 
+    -- THROTTLED TARGET DATA LOGIC
     local targ = mm:GetTarget()
     if not targ then return end
     local main_idx = targ:GetTargetIndex(0)
-    if main_idx == 0 then return end
-
-    refresh_party_cache(now)
-
+    
     local sub_active_raw = targ:GetIsSubTargetActive()
-    local is_sub_active  = (sub_active_raw ~= nil and sub_active_raw ~= 0 and sub_active_raw ~= false)
-    local sub_idx        = is_sub_active and targ:GetTargetIndex(1) or 0
-    local has_sub        = is_sub_active and sub_idx ~= 0 and sub_idx ~= main_idx
+    local is_sub_active = (sub_active_raw ~= nil and sub_active_raw ~= 0 and sub_active_raw ~= false)
+    local sub_idx = is_sub_active and targ:GetTargetIndex(1) or 0
 
-    local main_data = parse_target_data(main_idx, main_target_cache, false)
-    local sub_data  = has_sub and parse_target_data(sub_idx, sub_target_cache, true) or nil
+    -- Only refresh data if interval passed OR target has changed
+    if (now - last_logic_update > UPDATE_INTERVAL) or (main_idx ~= last_main_idx) or (sub_idx ~= last_sub_idx) then
+        last_logic_update = now
+        last_main_idx = main_idx
+        last_sub_idx = sub_idx
+        refresh_party_cache(now)
+        
+        main_data = (main_idx ~= 0) and parse_target_data(main_idx, main_target_cache, false) or nil
+        sub_data  = (sub_idx ~= 0 and sub_idx ~= main_idx) and parse_target_data(sub_idx, sub_target_cache, true) or nil
+    end
 
+    -- Rendering from cached data (High performance)
     local current_y = cfg.pos_y
-
     if sub_data then
-        local sub_bh    = math_max(2, math_floor(cfg.bar_height / 2))
+        local sub_bh = math_max(2, math_floor(cfg.bar_height / 2))
         local sub_spell = (cast_state.name ~= '' and cast_state.target_idx == sub_idx) and cast_state.name or nil
         local h = draw_bar(sub_data, '##targetbar_sub', cfg.pos_x, current_y, sub_bh, true, sub_spell)
         current_y = current_y - h - 4
@@ -637,7 +590,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
 end)
 
 ------------------------------------------------------------
--- USER COMMAND INTERACTION HOOK
+-- COMMANDS
 ------------------------------------------------------------
 ashita.events.register('command', 'targetbar_cmd', function(e)
     local args = e.command:args()
@@ -647,14 +600,14 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
     e.blocked = true
 
     local sub = args[2] and args[2]:lower() or 'toggle'
-    if      sub == 'toggle'         then show_ui[1] = not show_ui[1]
-    elseif sub == 'show'            then show_ui[1] = true
-    elseif sub == 'hide'            then show_ui[1] = false
-    elseif sub == 'lock'            then 
+    if     sub == 'toggle'   then show_ui[1] = not show_ui[1]
+    elseif sub == 'show'     then show_ui[1] = true
+    elseif sub == 'hide'     then show_ui[1] = false
+    elseif sub == 'lock'     then 
         cfg.locked = not cfg.locked
         settings.save()
         print('[targetbar] lock: ' .. tostring(cfg.locked))
-    elseif sub == 'dist'            then 
+    elseif sub == 'dist'     then 
         cfg.show_distance = not cfg.show_distance
         settings.save()
         print('[targetbar] distance: ' .. (cfg.show_distance and 'on' or 'off'))

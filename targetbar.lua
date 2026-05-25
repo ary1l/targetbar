@@ -1,7 +1,7 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '.14'
-addon.desc    = 'Target HP Bar w cast bar'
+addon.version = '.22'
+addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar', 'tbar' }
 
 require('common')
@@ -38,7 +38,10 @@ local cast_state = {
     name = '', 
     target = '', 
     target_color = {1,1,1,1}, 
-    target_idx = 0 
+    target_idx = 0,
+    last_pct = 0,
+    last_tick = 0,
+    is_item = false
 }
 
 ------------------------------------------------------------
@@ -49,6 +52,7 @@ local COLOR_BAR_BG    = imgui.GetColorU32({0.18, 0.18, 0.18, 0.85})
 local COLOR_BAR_DEAD  = imgui.GetColorU32({0.59, 0.12, 0.12, 1.0})
 local COLOR_CAST      = imgui.GetColorU32({0.20, 0.75, 0.20, 1.0})
 local COLOR_CAST_TXT  = {0.20, 0.75, 0.20, 1.0}
+local COLOR_ITEM_TXT  = {0.72, 0.46, 1.00, 1.0}
 local COLOR_HP_TXT    = {0.80, 0.80, 0.80, 1.0}
 local COLOR_DEAD_TXT  = {0.60, 0.20, 0.20, 1.0}
 local COLOR_DIST_FAR  = {1.00, 1.00, 1.00, 1.0}
@@ -96,6 +100,7 @@ end
 -- HELPERS
 ------------------------------------------------------------
 local mm = AshitaCore:GetMemoryManager()
+local rm = AshitaCore:GetResourceManager()
 local SCAN_INTERVAL  = 1.0
 local last_scan_time = 0
 local party_id_cache = {}
@@ -152,10 +157,10 @@ local function parse_target_data(tIdx, force_sub_brackets)
     local is_real_npc = false
 
     if is_pc then
-        if      sId == self_id_cache               then name_color = COLOR_PC_SELF
-        elseif party_id_cache[sId] == 'party'    then name_color = COLOR_PC_PARTY
+        if     sId == self_id_cache             then name_color = COLOR_PC_SELF
+        elseif party_id_cache[sId] == 'party'   then name_color = COLOR_PC_PARTY
         elseif party_id_cache[sId] == 'alliance' then name_color = COLOR_PC_ALLY
-        else                                          name_color = COLOR_PC_OTHER end
+        else                                         name_color = COLOR_PC_OTHER end
     elseif is_npc and not is_mob then
         name_color  = COLOR_NPC
         is_real_npc = true
@@ -200,7 +205,7 @@ local function parse_target_data(tIdx, force_sub_brackets)
     }
 end
 
-local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, spell_text)
+local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, spell_text, is_item_text)
     local flags = cfg.locked and WIN_FLAGS_LOCKED or WIN_FLAGS
     if is_sub then flags = bit.bor(flags, ImGuiWindowFlags_NoMove) end
 
@@ -240,7 +245,8 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, spell_text)
 
         if spell_text then
             imgui.SameLine()
-            imgui.TextColored(COLOR_CAST_TXT, spell_text)
+            local txt_color = is_item_text and COLOR_ITEM_TXT or COLOR_CAST_TXT
+            imgui.TextColored(txt_color, spell_text)
         end
 
         imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
@@ -279,7 +285,9 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y)
 
         imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
         imgui.SetCursorPosY(imgui.GetCursorPosY() + 2)
-        imgui.TextColored(COLOR_CAST_TXT, cast_state.name ~= '' and cast_state.name or 'Casting')
+        
+        local main_txt_color = cast_state.is_item and COLOR_ITEM_TXT or COLOR_CAST_TXT
+        imgui.TextColored(main_txt_color, cast_state.name ~= '' and cast_state.name or (cast_state.is_item and 'Item' or 'Casting'))
         imgui.SameLine(); imgui.TextColored({1,1,1,1}, ' -> ')
         imgui.SameLine(); imgui.TextColored(cast_state.target_color, cast_state.target ~= '' and cast_state.target or 'Self')
         imgui.SameLine(); imgui.TextColored(COLOR_HP_TXT, str_format(' %d%%', math_floor(cast_frac * 100)))
@@ -290,7 +298,7 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y)
         if dl then
             dl:AddRectFilled({cx, cy}, {cx + cfg.bar_width, cy + CAST_BAR_HEIGHT}, COLOR_BAR_BG)
             if cast_frac > 0 then
-                dl:AddRectFilled({cx, cy}, {cx + cfg.bar_width * cast_frac, cy + CAST_BAR_HEIGHT}, COLOR_CAST)
+                dl:AddRectFilled({cx, cy}, {cx + cfg.bar_width * cast_frac, cy + CAST_BAR_HEIGHT}, cast_state.is_item and imgui.GetColorU32(COLOR_ITEM_TXT) or COLOR_CAST)
             end
         end
 
@@ -302,27 +310,102 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y)
 end
 
 ------------------------------------------------------------
+-- FIX: SAFE MEMORY READ (Includes Item ID lookup)
+------------------------------------------------------------
+local function get_pending_subtarget_action(targ)
+    if not targ or not targ.pointer or targ.pointer == 0 then return nil, false end
+    
+    local sub_active_raw = targ:GetIsSubTargetActive()
+    local is_sub_active = (sub_active_raw ~= nil and sub_active_raw ~= 0 and sub_active_raw ~= false)
+    if not is_sub_active then return nil, false end
+
+    local sub_idx = targ:GetTargetIndex(1)
+    local sub_name = 'Unknown'
+    if sub_idx and sub_idx ~= 0 then
+        local entity = mm:GetEntity()
+        if entity then sub_name = entity:GetName(sub_idx) or 'Unknown' end
+    end
+
+    local action_id = 0
+    local category = 0
+    
+    local ok = pcall(function()
+        category = ashita.memory.read_uint32(targ.pointer + 0x14)
+        action_id = ashita.memory.read_uint32(targ.pointer + 0x18)
+    end)
+
+    if not ok then return str_format(' (-> %s)', sub_name), false end
+
+    if action_id > 0 and action_id < 65535 then
+        local action_name = nil
+        local is_item = false
+
+        if category == 5 then
+            local res = rm:GetItemById(action_id)
+            if res then action_name = res.Name[1] or res.Name[0] end
+            is_item = true
+        elseif category == 3 then -- Spells
+            local res = rm:GetSpellById(action_id)
+            if res then action_name = res.Name[1] or res.Name[0] end
+        elseif category == 7 or category == 9 then -- Abilities
+            local res = rm:GetAbilityById(action_id)
+            if res then action_name = res.Name[1] or res.Name[0] end
+        end
+
+        if action_name then
+            return str_format(' (%s -> %s)', action_name, sub_name), is_item
+        end
+    end
+
+    return str_format(' (-> %s)', sub_name), false
+end
+
+------------------------------------------------------------
 -- PACKET HOOK
 ------------------------------------------------------------
 ashita.events.register('packet_out', 'targetbar_packet', function(e)
-    if e.id ~= 0x1A then return end
+    if e.id ~= 0x1A and e.id ~= 0x37 then return end
+
     pcall(function()
-        local rm       = AshitaCore:GetResourceManager()
-        local action_id  = struct.unpack('H', e.data_modified, 0x0C + 1)
-        local target_idx = struct.unpack('H', e.data_modified, 0x08 + 1)
-        local category   = struct.unpack('H', e.data_modified, 0x0A + 1)
+        local target_idx = 0
+        local action_name = ''
+        local is_item = false
 
-        local res
-        if category == 3 then
-            res = rm:GetSpellById(action_id)
-        elseif category == 9 then
-            res = rm:GetAbilityById(action_id)
-        else
-            res = rm:GetSpellById(action_id) or rm:GetAbilityById(action_id)
+        if e.id == 0x1A then
+            target_idx       = struct.unpack('H', e.data_modified, 0x08 + 1)
+            local action_id  = struct.unpack('H', e.data_modified, 0x0C + 1)
+            local category   = struct.unpack('H', e.data_modified, 0x0A + 1)
+
+            if category == 5 then
+                local res = rm:GetItemById(action_id)
+                action_name = (res and (res.Name[1] or res.Name[0])) or 'Item'
+                is_item = true
+            else
+                local res
+                if category == 3 then
+                    res = rm:GetSpellById(action_id)
+                elseif category == 7 or category == 9 then
+                    res = rm:GetAbilityById(action_id)
+                else
+                    res = rm:GetSpellById(action_id) or rm:GetAbilityById(action_id)
+                end
+                
+                if res and res.Name then
+                    action_name = res.Name[1] or res.Name[0] or ''
+                end
+            end
+
+        elseif e.id == 0x37 then
+            target_idx = struct.unpack('H', e.data_modified, 0x08 + 1)
+            action_name = 'Item'
+            is_item = true
         end
+        
+        if action_name == '' or action_name == 'Gil' then return end
 
-        cast_state.name       = (res and res.Name and res.Name[1]) or ''
+        cast_state.name       = action_name
         cast_state.target_idx = target_idx
+        cast_state.is_item    = is_item
 
         local entity = mm:GetEntity()
         if target_idx == 0 or not entity then
@@ -356,6 +439,20 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     end
 
     if cast_frac > 0 and cast_frac < 0.99 then
+        if cast_frac == cast_state.last_pct then
+            if (os.clock() - cast_state.last_tick) > 0.75 then
+                cast_frac = 0
+            end
+        else
+            cast_state.last_pct = cast_frac
+            cast_state.last_tick = os.clock()
+        end
+    else
+        cast_state.last_pct = 0
+        cast_state.last_tick = os.clock()
+    end
+
+    if cast_frac > 0 and cast_frac < 0.99 and cast_state.name ~= '' then
         local cast_y = cfg.pos_y - last_cast_h - 4
         last_cast_h  = draw_cast_bar(cast_frac, cfg.pos_x, cast_y)
     else
@@ -378,14 +475,16 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local main_data = parse_target_data(main_idx, false)
     local sub_data  = has_sub and parse_target_data(sub_idx, true) or nil
     
+    local pending_str, is_item_text = get_pending_subtarget_action(targ)
+
     local current_y = cfg.pos_y
 
     if sub_data then
-        local h = draw_bar(sub_data, '##targetbar_sub', cfg.pos_x, current_y, math_max(2, math_floor(cfg.bar_height / 2)), true, nil)
+        local h = draw_bar(sub_data, '##targetbar_sub', cfg.pos_x, current_y, math_max(2, math_floor(cfg.bar_height / 2)), true, nil, false)
         current_y = current_y - h - 4
     end
     if main_data then
-        draw_bar(main_data, '##targetbar_main', cfg.pos_x, current_y, cfg.bar_height, false, nil)
+        draw_bar(main_data, '##targetbar_main', cfg.pos_x, current_y, cfg.bar_height, false, pending_str, is_item_text)
     end
 end)
 
@@ -400,7 +499,7 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
     e.blocked = true
 
     local sub = args[2] and args[2]:lower() or 'toggle'
-    if      sub == 'toggle'              then show_ui[1] = not show_ui[1]
+    if     sub == 'toggle'              then show_ui[1] = not show_ui[1]
     elseif sub == 'show'                then show_ui[1] = true
     elseif sub == 'hide'                then show_ui[1] = false
     elseif sub == 'lock'                then cfg.locked = not cfg.locked; print('[targetbar] lock: ' .. tostring(cfg.locked))
@@ -409,9 +508,9 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
     elseif sub == 'height' and args[3] then cfg.bar_height = tonumber(args[3]) or cfg.bar_height; print('[targetbar] height: ' .. cfg.bar_height)
     elseif sub == 'help' then
         print('[targetbar] /tbar toggle|show|hide')
-        print('[targetbar] /tbar lock         - toggle position lock')
-        print('[targetbar] /tbar dist         - toggle distance display')
-        print('[targetbar] /tbar width  <n>   - set bar width in pixels')
-        print('[targetbar] /tbar height <n>   - set bar height in pixels')
+        print('[targetbar] /tbar lock          - toggle position lock')
+        print('[targetbar] /tbar dist          - toggle distance display')
+        print('[targetbar] /tbar width  <n>    - set bar width in pixels')
+        print('[targetbar] /tbar height <n>    - set bar height in pixels')
     end
 end)

@@ -71,6 +71,7 @@ local cast_state = {
     target_color  = {1,1,1,1},
     target_idx    = 0,
     is_item       = false,
+    is_instant    = false,
     last_pct      = 0,
     last_tick     = 0,
     queued_time   = 0,
@@ -197,7 +198,7 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets)
     local is_real_npc = false
 
     if is_pc then
-        if     sId == self_id_cache          then name_color = COLOR_PC_SELF
+        if      sId == self_id_cache         then name_color = COLOR_PC_SELF
         elseif party_id_cache[sId] == 'party'    then name_color = COLOR_PC_PARTY
         elseif party_id_cache[sId] == 'alliance' then name_color = COLOR_PC_ALLY
         else                                          name_color = COLOR_PC_OTHER end
@@ -206,7 +207,6 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets)
         is_real_npc = true
     else
         local claim_status = 0
-        -- Minor fallback check to prevent volatile memory crashes
         local ok, cs = pcall(function() return entity:GetClaimStatus(tIdx) end)
         if ok and cs then claim_status = bit_band(cs, 0xFFFF) end
         
@@ -231,7 +231,6 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets)
         end
     end
 
-    -- CACHE: String concats inside a render loop murder performance. We cache them here.
     if out_cache.raw_name ~= name or out_cache.is_locked ~= is_locked then
         out_cache.raw_name     = name
         out_cache.is_locked    = is_locked
@@ -332,7 +331,7 @@ end
 ------------------------------------------------------------
 -- DRAW CAST BAR
 ------------------------------------------------------------
-local function draw_cast_bar(cast_frac, pos_x, pos_y)
+local function draw_cast_bar(cast_frac, pos_x, pos_y, is_instant)
     imgui.SetNextWindowPos(set_vec(v_pos, pos_x, pos_y), ImGuiCond_Always)
     imgui.SetNextWindowSize(set_vec(v_size, cfg.bar_width + 16, 0), ImGuiCond_Always)
 
@@ -351,31 +350,35 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y)
         local name_col = cast_state.is_item and COLOR_ITEM_TXT or COLOR_CAST_TXT
         local bar_col  = cast_state.is_item and COLOR_ITEM_BAR or COLOR_CAST
         
-        imgui.TextColored(name_col, cast_state.name ~= '' and cast_state.name or (cast_state.is_item and 'Item' or 'Casting'))
+        imgui.TextColored(name_col, cast_state.name ~= '' and cast_state.name or (cast_state.is_item and 'Item' or 'Action'))
         imgui.SameLine()
         imgui.TextColored(COLOR_ARROW, ' -> ')
         imgui.SameLine()
         imgui.TextColored(cast_state.target_color, cast_state.target ~= '' and cast_state.target or 'Self')
-        imgui.SameLine()
         
-        -- Cache cast percentage string
-        local frac_int = math_floor(cast_frac * 100)
-        if cast_state.last_frac_int ~= frac_int then
-            cast_state.last_frac_int = frac_int
-            cast_state.frac_str      = str_format(' %d%%', frac_int)
-        end
-        imgui.TextColored(COLOR_HP_TXT, cast_state.frac_str)
-
-        imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
-        local cx, cy = imgui.GetCursorScreenPos()
-        
-        imgui.Dummy(set_vec(v_size, cfg.bar_width, CAST_BAR_HEIGHT))
-        
-        if dl then
-            dl:AddRectFilled(set_vec(v_p1, cx, cy), set_vec(v_p2, cx + cfg.bar_width, cy + CAST_BAR_HEIGHT), COLOR_BAR_BG)
-            if cast_frac > 0 then
-                dl:AddRectFilled(v_p1, set_vec(v_p2, cx + cfg.bar_width * cast_frac, cy + CAST_BAR_HEIGHT), bar_col)
+        if not is_instant then
+            imgui.SameLine()
+            local frac_int = math_floor(cast_frac * 100)
+            if cast_state.last_frac_int ~= frac_int then
+                cast_state.last_frac_int = frac_int
+                cast_state.frac_str      = str_format(' %d%%', frac_int)
             end
+            imgui.TextColored(COLOR_HP_TXT, cast_state.frac_str)
+
+            imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
+            local cx, cy = imgui.GetCursorScreenPos()
+            
+            imgui.Dummy(set_vec(v_size, cfg.bar_width, CAST_BAR_HEIGHT))
+            
+            if dl then
+                dl:AddRectFilled(set_vec(v_p1, cx, cy), set_vec(v_p2, cx + cfg.bar_width, cy + CAST_BAR_HEIGHT), COLOR_BAR_BG)
+                if cast_frac > 0 then
+                    dl:AddRectFilled(v_p1, set_vec(v_p2, cx + cfg.bar_width * cast_frac, cy + CAST_BAR_HEIGHT), bar_col)
+                end
+            end
+        else
+            -- Add minor padding for instant abilities so the text block doesn't look squished
+            imgui.Dummy(set_vec(v_size, 0, 2))
         end
 
         local _, wh = imgui.GetWindowSize()
@@ -386,7 +389,7 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y)
 end
 
 ------------------------------------------------------------
--- STATE HISTORY BUFFER (Zero Allocation Re-use)
+-- STATE HISTORY BUFFER
 ------------------------------------------------------------
 local cast_history  = {}
 local history_count = 0
@@ -400,16 +403,14 @@ local function get_cast_pct()
 end
 
 ------------------------------------------------------------
--- OUTGOING PACKET HOOK (Intercepts Cast Requests)
+-- OUTGOING PACKET HOOK
 ------------------------------------------------------------
 ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
     
-    -- Safe boundary checks instead of slow `pcall`
     if e.id == 0x1A and e.size < 0x0E then return end
     if e.id == 0x37 and e.size < 0x0A then return end
 
-    -- 1) GATEKEEPER: Prevent macro spam from overwriting active cast bars
     if e.id == 0x1A then
         local current_pct = get_cast_pct()
         if current_pct > 0.0 and current_pct < 0.99 then return end
@@ -418,30 +419,51 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     local target_idx  = 0
     local action_name = ''
     local is_item     = false
+    local is_instant  = false
 
     if e.id == 0x1A then
         target_idx      = struct.unpack('H', e.data_modified, 0x08 + 1)
         local action_id = struct.unpack('H', e.data_modified, 0x0C + 1)
         local category  = struct.unpack('H', e.data_modified, 0x0A + 1)
 
-        if category == 3 then
+        if category == 3 then -- Magic
             local res = rm:GetSpellById(action_id)
             action_name = (res and res.Name and (res.Name[1] or res.Name[0])) or ''
-        elseif category == 7 or category == 9 then
+            is_instant = false
+        elseif category == 7 then -- Weaponskill (WS IDs map exactly to Dat IDs)
             local res = rm:GetAbilityById(action_id)
             if res and res.Name then
                 action_name = res.Name[1] or res.Name[0]
-            else
-                action_name = 'ITEM'
-                is_item = true
             end
-        elseif category == 5 then
-            action_name = 'ITEM'
-            is_item = true
-        else
-            local res = rm:GetSpellById(action_id) or rm:GetAbilityById(action_id)
+            is_instant = true
+        elseif category == 9 or category == 14 then -- Job Ability / Unblinkable JA (JA Dat IDs start at 512)
+            local res = rm:GetAbilityById(action_id + 512)
             if res and res.Name then
                 action_name = res.Name[1] or res.Name[0]
+            end
+            is_instant = true
+        elseif category == 5 then -- Item
+            action_name = 'ITEM'
+            is_item = true
+            is_instant = false
+        else
+            -- Fallback
+            local res_spell = rm:GetSpellById(action_id)
+            if res_spell and res_spell.Name then
+                action_name = res_spell.Name[1] or res_spell.Name[0]
+                is_instant = false
+            else
+                local res_abil = rm:GetAbilityById(action_id + 512)
+                if res_abil and res_abil.Name then
+                    action_name = res_abil.Name[1] or res_abil.Name[0]
+                    is_instant = true
+                else
+                    local res_ws = rm:GetAbilityById(action_id)
+                    if res_ws and res_ws.Name then
+                        action_name = res_ws.Name[1] or res_ws.Name[0]
+                        is_instant = true
+                    end
+                end
             end
         end
 
@@ -449,6 +471,7 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
         target_idx  = struct.unpack('H', e.data_modified, 0x08 + 1)
         action_name = 'ITEM'
         is_item     = true
+        is_instant  = false
     end
 
     if action_name == '' or action_name == 'Gil' then return end
@@ -468,9 +491,9 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     cast_state.target_color= target_color
     cast_state.target_idx  = target_idx
     cast_state.is_item     = is_item
+    cast_state.is_instant  = is_instant
     cast_state.queued_time = os_clock()
 
-    -- Push to Zero-Allocation History Buffer
     history_count = history_count + 1
     if not cast_history[history_count] then cast_history[history_count] = {} end
     
@@ -480,11 +503,12 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     entry.target_color = cast_state.target_color
     entry.target_idx   = cast_state.target_idx
     entry.is_item      = cast_state.is_item
+    entry.is_instant   = cast_state.is_instant
     entry.time         = cast_state.queued_time
 end)
 
 ------------------------------------------------------------
--- INCOMING PACKET HOOK (Undo History on Server Refusal)
+-- INCOMING PACKET HOOK
 ------------------------------------------------------------
 local REJECT_MSGS = {
     [12] = true, [17] = true, [34] = true, [47] = true, 
@@ -503,7 +527,6 @@ ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
         history_count = 0
         
     elseif REJECT_MSGS[msg_id] then
-        -- Pop the rejected spam spell out of our history count
         if history_count > 0 then history_count = history_count - 1 end
         
         local restored = false
@@ -516,6 +539,7 @@ ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
                 cast_state.target_color= prev.target_color
                 cast_state.target_idx  = prev.target_idx
                 cast_state.is_item     = prev.is_item
+                cast_state.is_instant  = prev.is_instant
                 cast_state.queued_time = prev.time
                 restored = true
             end
@@ -549,7 +573,6 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         end
     end
 
-    -- Server stall protection tracking logic
     if cast_frac > 0 then
         if cast_frac ~= cast_state.last_pct then
             cast_state.last_pct  = cast_frac
@@ -573,11 +596,12 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         cast_state.name = ''
     end
 
-    local display_frac = show_instant and 1.0 or cast_frac
+    -- Treat instant cast visual fractions as 0 (we only want text)
+    local display_frac = show_instant and (cast_state.is_instant and 0.0 or 1.0) or cast_frac
 
-    if display_frac > 0 and cast_state.name ~= '' then
+    if (display_frac > 0 or show_instant) and cast_state.name ~= '' then
         local cast_y = cfg.pos_y - last_cast_h - 4
-        last_cast_h  = draw_cast_bar(display_frac, cfg.pos_x, cast_y)
+        last_cast_h  = draw_cast_bar(display_frac, cfg.pos_x, cast_y, cast_state.is_instant)
     else
         last_cast_h = 0
     end
@@ -623,14 +647,14 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
     e.blocked = true
 
     local sub = args[2] and args[2]:lower() or 'toggle'
-    if     sub == 'toggle'         then show_ui[1] = not show_ui[1]
-    elseif sub == 'show'           then show_ui[1] = true
-    elseif sub == 'hide'           then show_ui[1] = false
-    elseif sub == 'lock'           then 
+    if      sub == 'toggle'         then show_ui[1] = not show_ui[1]
+    elseif sub == 'show'            then show_ui[1] = true
+    elseif sub == 'hide'            then show_ui[1] = false
+    elseif sub == 'lock'            then 
         cfg.locked = not cfg.locked
         settings.save()
         print('[targetbar] lock: ' .. tostring(cfg.locked))
-    elseif sub == 'dist'           then 
+    elseif sub == 'dist'            then 
         cfg.show_distance = not cfg.show_distance
         settings.save()
         print('[targetbar] distance: ' .. (cfg.show_distance and 'on' or 'off'))

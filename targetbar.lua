@@ -47,7 +47,7 @@ ashita.events.register('settings', 'settings_update', function(s)
 end)
 
 local CAST_BAR_HEIGHT   = 8
-local INSTANT_FLASH_DUR = 0.6
+local INSTANT_FLASH_DUR = 2.0
 
 ------------------------------------------------------------
 -- PRE-ALLOCATED UI VECTORS (Eliminates GC stutter in Render Loop)
@@ -198,7 +198,7 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets)
     local is_real_npc = false
 
     if is_pc then
-        if      sId == self_id_cache         then name_color = COLOR_PC_SELF
+        if      sId == self_id_cache        then name_color = COLOR_PC_SELF
         elseif party_id_cache[sId] == 'party'    then name_color = COLOR_PC_PARTY
         elseif party_id_cache[sId] == 'alliance' then name_color = COLOR_PC_ALLY
         else                                          name_color = COLOR_PC_OTHER end
@@ -430,20 +430,20 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
             local res = rm:GetSpellById(action_id)
             action_name = (res and res.Name and (res.Name[1] or res.Name[0])) or ''
             is_instant = false
-        elseif category == 7 then -- Weaponskill (WS IDs map exactly to Dat IDs)
+        elseif category == 7 then -- Weaponskill
             local res = rm:GetAbilityById(action_id)
             if res and res.Name then
                 action_name = res.Name[1] or res.Name[0]
             end
             is_instant = true
-        elseif category == 9 or category == 14 then -- Job Ability / Unblinkable JA (JA Dat IDs start at 512)
+        elseif category == 9 or category == 14 then -- Job Ability / Unblinkable JA
             local res = rm:GetAbilityById(action_id + 512)
             if res and res.Name then
                 action_name = res.Name[1] or res.Name[0]
             end
             is_instant = true
-        elseif category == 5 then -- Item
-            action_name = 'ITEM'
+        elseif category == 5 then -- Item (Finished Cast)
+            action_name = 'Item'
             is_item = true
             is_instant = false
         else
@@ -467,9 +467,10 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
             end
         end
 
-    elseif e.id == 0x37 then
+    elseif e.id == 0x37 then -- Item (Started Cast)
         target_idx  = struct.unpack('H', e.data_modified, 0x08 + 1)
-        action_name = 'ITEM'
+        
+        action_name = 'Item'
         is_item     = true
         is_instant  = false
     end
@@ -506,7 +507,6 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     entry.is_instant   = cast_state.is_instant
     entry.time         = cast_state.queued_time
 end)
-
 ------------------------------------------------------------
 -- INCOMING PACKET HOOK
 ------------------------------------------------------------
@@ -668,8 +668,8 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
         print('[targetbar] height: ' .. cfg.bar_height)
     elseif sub == 'help' then
         print('[targetbar] /tbar toggle|show|hide')
-        print('[targetbar] /tbar lock        - toggle position lock')
-        print('[targetbar] /tbar dist        - toggle distance display')
+        print('[targetbar] /tbar lock       - toggle position lock')
+        print('[targetbar] /tbar dist       - toggle distance display')
         print('[targetbar] /tbar width  <n>  - set bar width in pixels')
         print('[targetbar] /tbar height <n>  - set bar height in pixels')
     end

@@ -25,6 +25,8 @@ local pcall      = pcall
 local type       = type
 local pairs      = pairs
 local unpack     = struct.unpack
+local tostring   = tostring
+local table_clear= table.clear
 
 ------------------------------------------------------------
 -- WINDOW FLAGS
@@ -45,7 +47,7 @@ local default_cfg = {
 local cfg             = default_cfg
 
 local CAST_BAR_HEIGHT  = 8
-local INSTANT_FLASH   = 2.5
+local INSTANT_FLASH    = 2.5
 local UPDATE_INTERVAL  = 0.15
 local SCAN_INTERVAL    = 1.0
 
@@ -131,15 +133,6 @@ local v_p2   = {0, 0}
 local p_open = {true} 
 
 ------------------------------------------------------------
--- MODULE-LEVEL pcall TARGETS (no per-call closure allocs)
-------------------------------------------------------------
-local _cl_entity, _cl_tIdx, _cl_targ, _cl_cb
-
-local function _get_claim_status() return _cl_entity:GetClaimStatus(_cl_tIdx) end
-local function _get_locked_flags() return _cl_targ:GetLockedOnFlags()          end
-local function _get_cb_percent()   return _cl_cb:GetPercent()                  end
-
-------------------------------------------------------------
 -- LOAD / UNLOAD / SETTINGS
 ------------------------------------------------------------
 ashita.events.register('load', 'targetbar_load', function()
@@ -187,7 +180,7 @@ local function refresh_party_cache(now)
     local party = mm:GetParty()
     if not party then return end
     
-    table.clear(party_id_cache)
+    table_clear(party_id_cache)
     
     local sid = party:GetMemberServerId(0)
     self_id_cache  = sid or 0
@@ -196,7 +189,7 @@ local function refresh_party_cache(now)
         if party:GetMemberIsActive(i) ~= 0 then
             local sId = party:GetMemberServerId(i)
             if sId and sId ~= 0 then
-                party_id_cache[sId] = (i < 6) and 'party' or 'alliance'
+                party_id_cache[sId] = (i < 6) and 1 or 2
             end
         end
     end
@@ -224,9 +217,9 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
     if is_pc then
         if sId == self_id_cache then
             name_color = COLOR_PC_SELF
-        elseif party_id_cache[sId] == 'party' then
+        elseif party_id_cache[sId] == 1 then
             name_color = COLOR_PC_PARTY
-        elseif party_id_cache[sId] == 'alliance' then
+        elseif party_id_cache[sId] == 2 then
             name_color = COLOR_PC_ALLY
         else
             name_color = COLOR_PC_OTHER
@@ -235,9 +228,8 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         name_color  = COLOR_NPC
         is_real_npc = true
     else
-        _cl_entity, _cl_tIdx = entity, tIdx
-        local ok, cs = pcall(_get_claim_status)
-        local claim_status = (ok and cs) and bit_band(cs, 0xFFFF) or 0
+        local cs = entity:GetClaimStatus(tIdx)
+        local claim_status = (type(cs) == 'number') and bit_band(cs, 0xFFFF) or 0
         if claim_status == 0 then
             name_color = COLOR_ENEMY
         elseif claim_status == self_id_masked then
@@ -256,9 +248,8 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
     -- lock indicator
     local is_locked = force_sub_brackets
     if not force_sub_brackets then
-        _cl_targ = targ
-        local ok2, lf = pcall(_get_locked_flags)
-        if ok2 and type(lf) == 'number' then
+        local lf = targ:GetLockedOnFlags()
+        if type(lf) == 'number' then
             is_locked = (bit_band(lf, 0x01) ~= 0)
         end
     end
@@ -492,13 +483,12 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
 
     local now = os_clock()
 
-    -- zero-allocation cast bar percent extraction
+    -- zero-allocation cast bar percent extraction (without pcall)
     local cast_frac = 0.0
     local cb = mm:GetCastBar()
     if cb then
-        _cl_cb = cb
-        local ok, pct = pcall(_get_cb_percent)
-        if ok and pct then
+        local pct = cb:GetPercent()
+        if type(pct) == 'number' then
             cast_frac = math_max(0.0, math_min(1.0, pct))
         end
     end
@@ -542,7 +532,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
 
     if (now - last_logic_update > UPDATE_INTERVAL)
     or (main_idx ~= last_main_idx)
-    or (sub_idx  != last_sub_idx) then
+    or (sub_idx  ~= last_sub_idx) then
         last_logic_update = now
         last_main_idx     = main_idx
         last_sub_idx      = sub_idx

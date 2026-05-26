@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '.0003'
+addon.version = '1.3'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -44,20 +44,6 @@ local default_cfg = {
 }
 
 local cfg = default_cfg
-
--- Wait until Ashita signals that the addon is officially loaded and memory is ready
-ashita.events.register('load', 'targetbar_load', function()
-    cfg = settings.load(default_cfg) or default_cfg
-end)
-
-ashita.events.register('settings', 'settings_update', function(s)
-    if s ~= nil then cfg = s end
-end)
-
-ashita.events.register('settings', 'settings_update', function(s)
-    if s ~= nil then cfg = s end
-end)
-
 local CAST_BAR_HEIGHT   = 8
 local INSTANT_FLASH_DUR = 2.5
 
@@ -66,6 +52,73 @@ local UPDATE_INTERVAL   = 0.1
 local last_logic_update = 0
 local last_main_idx     = 0
 local last_sub_idx      = 0
+
+------------------------------------------------------------
+-- COLORS & LOOKUP TABLES
+------------------------------------------------------------
+local COLOR_PANEL_BG  = imgui.GetColorU32({0.05, 0.05, 0.05, 0.65})
+local COLOR_BAR_BG    = imgui.GetColorU32({0.18, 0.18, 0.18, 0.85})
+local COLOR_BAR_DEAD  = imgui.GetColorU32({0.59, 0.12, 0.12, 1.0})
+local COLOR_CAST      = imgui.GetColorU32({0.20, 0.75, 0.20, 1.0})
+local COLOR_CAST_TXT  = {0.20, 0.75, 0.20, 1.0}
+local COLOR_ITEM_TXT  = {0.72, 0.46, 1.00, 1.0}
+local COLOR_ITEM_BAR  = imgui.GetColorU32({0.72, 0.46, 1.00, 1.0})
+local COLOR_HP_TXT    = {0.80, 0.80, 0.80, 1.0}
+local COLOR_DEAD_TXT  = {0.60, 0.20, 0.20, 1.0}
+local COLOR_DIST_FAR  = {1.00, 1.00, 1.00, 1.0}
+local COLOR_DIST_MID  = {0.00, 0.78, 1.00, 1.0}
+local COLOR_DIST_NEAR = {0.29, 1.00, 0.29, 1.0}
+local COLOR_NPC       = {0.55, 0.89, 0.52, 1.0}
+local COLOR_PC_SELF   = {0.26, 0.53, 0.96, 1.0}
+local COLOR_PC_PARTY  = {0.27, 0.78, 1.00, 1.0}
+local COLOR_PC_ALLY   = {0.62, 0.89, 1.00, 1.0}
+local COLOR_PC_OTHER  = {0.80, 0.90, 1.00, 1.0}
+local COLOR_ENEMY     = {0.97, 0.93, 0.55, 1.0}
+local COLOR_CLAIM     = {1.00, 0.30, 0.30, 1.0}
+local COLOR_STEALTH   = {0.83, 0.42, 0.83, 1.0}
+local COLOR_ARROW     = {1.00, 1.00, 1.00, 1.0}
+
+local HP_GRADIENT = {
+    { at=1.00, r=0.12, g=0.55, b=0.12 },
+    { at=0.75, r=0.50, g=0.65, b=0.10 },
+    { at=0.50, r=1.00, g=0.80, b=0.00 },
+    { at=0.25, r=1.00, g=0.45, b=0.00 },
+    { at=0.00, r=0.90, g=0.10, b=0.10 },
+}
+local HP_COLOR_LUT = {}
+
+-- OPTIMIZATION 2: Wait until Ashita signals that the addon is officially loaded
+ashita.events.register('load', 'targetbar_load', function()
+    cfg = settings.load(default_cfg) or default_cfg
+    
+    local function lerp(a, b, t) return a + (b - a) * t end
+    for pct = 0, 100 do
+        local frac = pct / 100.0
+        local col = {0.90, 0.10, 0.10, 1.0}
+        if frac >= 1.0 then
+            col = {0.12, 0.55, 0.12, 1.0}
+        else
+            for i = 1, #HP_GRADIENT - 1 do
+                local hi, lo = HP_GRADIENT[i], HP_GRADIENT[i + 1]
+                if frac <= hi.at and frac >= lo.at then
+                    local t = (hi.at - lo.at > 0) and (frac - lo.at) / (hi.at - lo.at) or 0
+                    col = { lerp(lo.r,hi.r,t), lerp(lo.g,hi.g,t), lerp(lo.b,hi.b,t), 1.0 }
+                    break
+                end
+            end
+        end
+        HP_COLOR_LUT[pct] = imgui.GetColorU32(col)
+    end
+end)
+
+ashita.events.register('settings', 'settings_update', function(s)
+    if s ~= nil then cfg = s end
+end)
+
+-- OPTIMIZATION 1B: Safely save window position to disk on exit/reload
+ashita.events.register('unload', 'targetbar_unload', function()
+    settings.save()
+end)
 
 ------------------------------------------------------------
 -- PRE-ALLOCATED UI VECTORS (Optimized for zero-allocation)
@@ -159,60 +212,6 @@ local WIN_FLAGS_LOCKED = bit_bor(WIN_FLAGS, ImGuiWindowFlags_NoMove)
 local WIN_FLAGS_CAST   = bit_bor(WIN_FLAGS, ImGuiWindowFlags_NoMove)
 
 ------------------------------------------------------------
--- COLORS & LOOKUP TABLES
-------------------------------------------------------------
-local COLOR_PANEL_BG  = imgui.GetColorU32({0.05, 0.05, 0.05, 0.65})
-local COLOR_BAR_BG    = imgui.GetColorU32({0.18, 0.18, 0.18, 0.85})
-local COLOR_BAR_DEAD  = imgui.GetColorU32({0.59, 0.12, 0.12, 1.0})
-local COLOR_CAST      = imgui.GetColorU32({0.20, 0.75, 0.20, 1.0})
-local COLOR_CAST_TXT  = {0.20, 0.75, 0.20, 1.0}
-local COLOR_ITEM_TXT  = {0.72, 0.46, 1.00, 1.0}
-local COLOR_ITEM_BAR  = imgui.GetColorU32({0.72, 0.46, 1.00, 1.0})
-local COLOR_HP_TXT    = {0.80, 0.80, 0.80, 1.0}
-local COLOR_DEAD_TXT  = {0.60, 0.20, 0.20, 1.0}
-local COLOR_DIST_FAR  = {1.00, 1.00, 1.00, 1.0}
-local COLOR_DIST_MID  = {0.00, 0.78, 1.00, 1.0}
-local COLOR_DIST_NEAR = {0.29, 1.00, 0.29, 1.0}
-local COLOR_NPC       = {0.55, 0.89, 0.52, 1.0}
-local COLOR_PC_SELF   = {0.26, 0.53, 0.96, 1.0}
-local COLOR_PC_PARTY  = {0.27, 0.78, 1.00, 1.0}
-local COLOR_PC_ALLY   = {0.62, 0.89, 1.00, 1.0}
-local COLOR_PC_OTHER  = {0.80, 0.90, 1.00, 1.0}
-local COLOR_ENEMY     = {0.97, 0.93, 0.55, 1.0}
-local COLOR_CLAIM     = {1.00, 0.30, 0.30, 1.0}
-local COLOR_STEALTH   = {0.83, 0.42, 0.83, 1.0}
-local COLOR_ARROW     = {1.00, 1.00, 1.00, 1.0}
-
-local HP_GRADIENT = {
-    { at=1.00, r=0.12, g=0.55, b=0.12 },
-    { at=0.75, r=0.50, g=0.65, b=0.10 },
-    { at=0.50, r=1.00, g=0.80, b=0.00 },
-    { at=0.25, r=1.00, g=0.45, b=0.00 },
-    { at=0.00, r=0.90, g=0.10, b=0.10 },
-}
-local HP_COLOR_LUT = {}
-do
-    local function lerp(a, b, t) return a + (b - a) * t end
-    for pct = 0, 100 do
-        local frac = pct / 100.0
-        local col = {0.90, 0.10, 0.10, 1.0}
-        if frac >= 1.0 then
-            col = {0.12, 0.55, 0.12, 1.0}
-        else
-            for i = 1, #HP_GRADIENT - 1 do
-                local hi, lo = HP_GRADIENT[i], HP_GRADIENT[i + 1]
-                if frac <= hi.at and frac >= lo.at then
-                    local t = (hi.at - lo.at > 0) and (frac - lo.at) / (hi.at - lo.at) or 0
-                    col = { lerp(lo.r,hi.r,t), lerp(lo.g,hi.g,t), lerp(lo.b,hi.b,t), 1.0 }
-                    break
-                end
-            end
-        end
-        HP_COLOR_LUT[pct] = imgui.GetColorU32(col)
-    end
-end
-
-------------------------------------------------------------
 -- PARSE TARGET DATA
 ------------------------------------------------------------
 local _claim_args = { nil, 0 }
@@ -229,7 +228,9 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets)
     local name   = entity:GetName(tIdx) or '???'
     local hp_pct = entity:GetHPPercent(tIdx) or 0
     local spawn  = entity:GetSpawnFlags(tIdx) or 0
-    local dist   = math_sqrt(entity:GetDistance(tIdx) or 0)
+    
+    -- OPTIMIZATION 3A: Distance sq check logic
+    local dist_sq = entity:GetDistance(tIdx) or 0
 
     local is_pc  = (bit_band(spawn, 0x01) ~= 0)
     local is_npc = (bit_band(spawn, 0x02) ~= 0)
@@ -239,10 +240,10 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets)
     local is_real_npc = false
 
     if is_pc then
-        if     sId == self_id_cache             then name_color = COLOR_PC_SELF
-        elseif party_id_cache[sId] == 'party'   then name_color = COLOR_PC_PARTY
+        if      sId == self_id_cache             then name_color = COLOR_PC_SELF
+        elseif party_id_cache[sId] == 'party'    then name_color = COLOR_PC_PARTY
         elseif party_id_cache[sId] == 'alliance' then name_color = COLOR_PC_ALLY
-        else                                         name_color = COLOR_PC_OTHER end
+        else                                          name_color = COLOR_PC_OTHER end
     elseif is_npc and not is_mob then
         name_color  = COLOR_NPC
         is_real_npc = true
@@ -288,10 +289,13 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets)
         out_cache.bar_color = out_cache.dead and COLOR_BAR_DEAD or HP_COLOR_LUT[math_max(0, math_min(100, hp_pct))]
     end
 
-    if not out_cache.last_dist or math_abs(out_cache.last_dist - dist) > 0.1 then
-        out_cache.last_dist  = dist
-        out_cache.dist_str   = str_format('%.1f', dist)
-        out_cache.dist_color = dist <= 21.0 and COLOR_DIST_NEAR or (dist <= 50.0 and COLOR_DIST_MID or COLOR_DIST_FAR)
+    -- OPTIMIZATION 3B: Use stored distance squared and check thresholds
+    if not out_cache.last_dist_sq or math_abs(out_cache.last_dist_sq - dist_sq) > 1.0 then
+        local dist = math_sqrt(dist_sq)
+        out_cache.last_dist_sq = dist_sq
+        out_cache.last_dist    = dist
+        out_cache.dist_str     = str_format('%.1f', dist)
+        out_cache.dist_color   = dist_sq <= 441.0 and COLOR_DIST_NEAR or (dist_sq <= 2500.0 and COLOR_DIST_MID or COLOR_DIST_FAR)
     end
 
     out_cache.name_color  = name_color
@@ -356,11 +360,11 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, spell_name)
             end
         end
 
+        -- OPTIMIZATION 1A: Stopped heavy disc writing inside draw loop
         if not cfg.locked and not is_sub then
             local new_x, new_y = imgui.GetWindowPos()
             if cfg.pos_x ~= new_x or cfg.pos_y ~= new_y then
                 cfg.pos_x, cfg.pos_y = new_x, new_y
-                settings.save()
             end
         end
 
@@ -635,7 +639,7 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
     e.blocked = true
 
     local sub = args[2] and args[2]:lower() or 'toggle'
-    if     sub == 'toggle'   then show_ui[1] = not show_ui[1]
+    if      sub == 'toggle'   then show_ui[1] = not show_ui[1]
     elseif sub == 'show'     then show_ui[1] = true
     elseif sub == 'hide'     then show_ui[1] = false
     elseif sub == 'lock'     then
@@ -656,8 +660,8 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
         print('[targetbar] height: ' .. cfg.bar_height)
     elseif sub == 'help' then
         print('[targetbar] /tbar toggle|show|hide')
-        print('[targetbar] /tbar lock       - toggle position lock')
-        print('[targetbar] /tbar dist       - toggle distance display')
+        print('[targetbar] /tbar lock        - toggle position lock')
+        print('[targetbar] /tbar dist        - toggle distance display')
         print('[targetbar] /tbar width  <n>  - set bar width in pixels')
         print('[targetbar] /tbar height <n>  - set bar height in pixels')
     end

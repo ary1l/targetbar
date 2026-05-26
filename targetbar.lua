@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '1.4a'
+addon.version = '1.5'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -28,26 +28,34 @@ local pairs      = pairs
 local unpack     = struct.unpack
 
 ------------------------------------------------------------
--- WINDOW FLAGS (computed once)
+-- WINDOW FLAGS (computed once; position always via commands)
 ------------------------------------------------------------
-local FLAGS_BASE = bit_bor(
+local FLAGS_LOCKED = bit_bor(
     ImGuiWindowFlags_NoDecoration, ImGuiWindowFlags_AlwaysAutoResize,
     ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags_NoNav,
-    ImGuiWindowFlags_NoBackground)
-local FLAGS_MOVE = bit_bor(FLAGS_BASE, ImGuiWindowFlags_NoMove)
+    ImGuiWindowFlags_NoBackground, ImGuiWindowFlags_NoMove,
+    ImGuiWindowFlags_NoMouseInputs)
 
 ------------------------------------------------------------
 -- CONFIG & CONSTANTS
 ------------------------------------------------------------
 local default_cfg = {
     pos_x = 1010, pos_y = 820, bar_width = 400, bar_height = 14,
-    show_distance = true, locked = false,
+    show_distance = true,
 }
 local cfg             = default_cfg
-local CAST_BAR_HEIGHT = 8
+
+local CAST_BAR_HEIGHT  = 8
 local INSTANT_FLASH   = 2.5
-local UPDATE_INTERVAL = 0.1
-local SCAN_INTERVAL   = 1.0
+local UPDATE_INTERVAL  = 0.15
+local SCAN_INTERVAL    = 1.0
+
+-- layout: magic numbers isolated here
+local PANEL_PADDING    = 4     -- left cursor indent inside each window
+local TOP_PADDING      = 2     -- top cursor nudge for main bar
+local CAST_WIN_HEIGHT  = 22    -- imgui chrome + content height of the cast bar window
+local CAST_STACK_H     = 25    -- height reserved when cast bar is visible (for stacking offset)
+local SUB_BAR_OFFSET   = 30    -- vertical gap between sub-target bar and main bar
 
 ------------------------------------------------------------
 -- COLORS
@@ -110,19 +118,28 @@ local last_scan_time    = 0
 local self_id_cache     = 0
 local self_id_masked    = 0   -- cached bit_band(self_id_cache, 0xFFFF)
 
-local main_data  = nil
-local sub_data   = nil
-local last_cast_h = 0
-local show_ui    = { true }
+local main_data      = nil
+local sub_data       = nil
+local last_cast_h    = 0
+local is_ui_visible  = true
 
 ------------------------------------------------------------
--- PRE-ALLOCATED VECTORS (zero alloc draw calls)
+-- PRE-ALLOCATED VECTORS & TABLES (zero alloc draw calls)
 ------------------------------------------------------------
 local v_pos  = {0, 0}
 local v_size = {0, 0}
 local v_p1   = {0, 0}
 local v_p2   = {0, 0}
-local function sv(v, x, y) v[1]=x; v[2]=y; return v end
+local p_open = {true}         -- reused for every imgui.Begin call
+
+------------------------------------------------------------
+-- MODULE-LEVEL pcall TARGETS (no per-call closure allocs)
+------------------------------------------------------------
+local _cl_entity, _cl_tIdx, _cl_targ, _cl_cb   -- scratch refs for pcall targets
+
+local function _get_claim_status() return _cl_entity:GetClaimStatus(_cl_tIdx) end
+local function _get_locked_flags() return _cl_targ:GetLockedOnFlags()          end
+local function _get_cb_percent()   return _cl_cb:GetPercent()                  end
 
 ------------------------------------------------------------
 -- LOAD / UNLOAD / SETTINGS
@@ -156,12 +173,11 @@ ashita.events.register('settings', 'settings_update', function(s)
 end)
 
 ashita.events.register('unload', 'targetbar_unload', function()
-    -- nil stale references before shutdown
     main_data = nil
     sub_data  = nil
-    cast_state.name         = ''
-    cast_state.cast_string  = ''
-    pcall(function() settings.save() end)
+    cast_state.name        = ''
+    cast_state.cast_string = ''
+    pcall(settings.save)
 end)
 
 ------------------------------------------------------------
@@ -172,7 +188,9 @@ local function refresh_party_cache(now)
     last_scan_time = now
     local party = mm:GetParty()
     if not party then return end
-    for k in pairs(party_id_cache) do party_id_cache[k] = nil end
+    
+    table.clear(party_id_cache)
+    
     local sid = party:GetMemberServerId(0)
     self_id_cache  = sid or 0
     self_id_masked = bit_band(self_id_cache, 0xFFFF)
@@ -219,7 +237,8 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         name_color  = COLOR_NPC
         is_real_npc = true
     else
-        local ok, cs   = pcall(function() return entity:GetClaimStatus(tIdx) end)
+        _cl_entity, _cl_tIdx = entity, tIdx
+        local ok, cs = pcall(_get_claim_status)
         local claim_status = (ok and cs) and bit_band(cs, 0xFFFF) or 0
         if claim_status == 0 then
             name_color = COLOR_ENEMY
@@ -239,7 +258,8 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
     -- lock indicator
     local is_locked = force_sub_brackets
     if not force_sub_brackets then
-        local ok2, lf = pcall(function() return targ:GetLockedOnFlags() end)
+        _cl_targ = targ
+        local ok2, lf = pcall(_get_locked_flags)
         if ok2 and type(lf) == 'number' then
             is_locked = (bit_band(lf, 0x01) ~= 0)
         end
@@ -260,11 +280,12 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         out_cache.dead      = (hp_pct == 0)
         out_cache.hp_frac   = math_max(0.0, math_min(1.0, hp_pct / 100.0))
         out_cache.bar_color = out_cache.dead and COLOR_BAR_DEAD
-                           or HP_COLOR_LUT[math_max(0, math_min(100, hp_pct))]
+                            or HP_COLOR_LUT[math_max(0, math_min(100, hp_pct))]
     end
 
-    -- distance (only reformat when meaningfully changed)
-    if not out_cache.last_dist_sq or math_abs(out_cache.last_dist_sq - dist_sq) > 1.0 then
+    -- distance: percentage-based threshold logic
+    if not out_cache.last_dist_sq
+    or math_abs(out_cache.last_dist_sq - dist_sq) > math_max(1.0, out_cache.last_dist_sq * 0.02) then
         out_cache.last_dist_sq = dist_sq
         out_cache.dist_str     = str_format('%.1f', math_sqrt(dist_sq))
         out_cache.dist_color   = dist_sq <= 441.0  and COLOR_DIST_NEAR
@@ -281,42 +302,46 @@ end
 -- DRAW: HP BAR
 ------------------------------------------------------------
 local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, force_blue)
-    local flags = (cfg.locked or is_sub) and FLAGS_MOVE or FLAGS_BASE
-    imgui.SetNextWindowPos(sv(v_pos, pos_x, pos_y), ImGuiCond_Always)
-    imgui.SetNextWindowSize(sv(v_size, cfg.bar_width + 16, 0), ImGuiCond_Always)
+    v_pos[1], v_pos[2] = pos_x, pos_y
+    imgui.SetNextWindowPos(v_pos, ImGuiCond_Always)
+    
+    v_size[1], v_size[2] = cfg.bar_width + 16, 0
+    imgui.SetNextWindowSize(v_size, ImGuiCond_Always)
 
-    if imgui.Begin(win_id, {true}, flags) then
+    p_open[1] = true
+    if imgui.Begin(win_id, p_open, FLAGS_LOCKED) then
         local dl = imgui.GetWindowDrawList()
         if dl then
             local wx, wy = imgui.GetWindowPos()
             local ww, wh = imgui.GetWindowSize()
-            dl:AddRectFilled(sv(v_p1, wx, wy), sv(v_p2, wx+ww, wy+wh),
-                force_blue and COLOR_PANEL_BLUE or COLOR_PANEL_BG, 4.0)
+            v_p1[1], v_p1[2] = wx, wy
+            v_p2[1], v_p2[2] = wx + ww, wy + wh
+            dl:AddRectFilled(v_p1, v_p2, force_blue and COLOR_PANEL_BLUE or COLOR_PANEL_BG, 4.0)
         end
 
-        imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
-        if not is_sub then imgui.SetCursorPosY(imgui.GetCursorPosY() + 2) end
+        imgui.SetCursorPosX(imgui.GetCursorPosX() + PANEL_PADDING)
+        if not is_sub then imgui.SetCursorPosY(imgui.GetCursorPosY() + TOP_PADDING) end
 
-        -- 1. Distance (if applicable)
+        -- 1. Distance
         if cfg.show_distance and not data.is_self then
             imgui.TextColored(data.dist_color, data.dist_str)
             imgui.SameLine()
         end
 
-        -- 2. HP/DEAD (Moved above Name)
+        -- 2. HP / DEAD
         if not data.is_real_npc then
             if data.dead then
                 imgui.TextColored(COLOR_DEAD_TXT, 'DEAD')
             else
                 imgui.TextColored(COLOR_HP_TXT, data.hp_str)
             end
-            imgui.SameLine() -- Adds space before the name
+            imgui.SameLine()
         end
 
         -- 3. Name
         imgui.TextColored(data.name_color, data.display_name)
 
-        -- 4. Spells/Items
+        -- 4. Spell / Item label
         if has_spell then
             imgui.SameLine()
             imgui.TextColored(
@@ -324,22 +349,19 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, fo
                 cast_state.cast_string)
         end
 
-        -- Everything below remains the same
-        imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
+        imgui.SetCursorPosX(imgui.GetCursorPosX() + PANEL_PADDING)
         local cx, cy = imgui.GetCursorScreenPos()
-        imgui.Dummy(sv(v_size, cfg.bar_width, bar_h))
+        
+        v_size[1], v_size[2] = cfg.bar_width, bar_h
+        imgui.Dummy(v_size)
 
         if dl then
-            dl:AddRectFilled(sv(v_p1, cx, cy), sv(v_p2, cx + cfg.bar_width, cy + bar_h), COLOR_BAR_BG)
+            v_p1[1], v_p1[2] = cx, cy
+            v_p2[1], v_p2[2] = cx + cfg.bar_width, cy + bar_h
+            dl:AddRectFilled(v_p1, v_p2, COLOR_BAR_BG)
             if not data.is_real_npc and data.hp_frac > 0 then
-                dl:AddRectFilled(v_p1, sv(v_p2, cx + cfg.bar_width * data.hp_frac, cy + bar_h), data.bar_color)
-            end
-        end
-
-        if not cfg.locked and not is_sub then
-            local new_x, new_y = imgui.GetWindowPos()
-            if cfg.pos_x ~= new_x or cfg.pos_y ~= new_y then
-                cfg.pos_x, cfg.pos_y = new_x, new_y
+                v_p2[1] = cx + cfg.bar_width * data.hp_frac
+                dl:AddRectFilled(v_p1, v_p2, data.bar_color)
             end
         end
     end
@@ -350,19 +372,25 @@ end
 -- DRAW: CAST BAR
 ------------------------------------------------------------
 local function draw_cast_bar(cast_frac, pos_x, pos_y, is_instant)
-    imgui.SetNextWindowPos(sv(v_pos, pos_x, pos_y), ImGuiCond_Always)
-    imgui.SetNextWindowSize(sv(v_size, cfg.bar_width + 16, 0), ImGuiCond_Always)
+    v_pos[1], v_pos[2] = pos_x, pos_y
+    imgui.SetNextWindowPos(v_pos, ImGuiCond_Always)
+    
+    v_size[1], v_size[2] = cfg.bar_width + 16, 0
+    imgui.SetNextWindowSize(v_size, ImGuiCond_Always)
 
-    if imgui.Begin('##targetbar_cast', {true}, FLAGS_MOVE) then
+    p_open[1] = true
+    if imgui.Begin('##targetbar_cast', p_open, FLAGS_LOCKED) then
         local dl = imgui.GetWindowDrawList()
         if dl then
             local wx, wy = imgui.GetWindowPos()
             local ww, wh = imgui.GetWindowSize()
-            dl:AddRectFilled(sv(v_p1, wx, wy), sv(v_p2, wx+ww, wy+wh), COLOR_PANEL_BG, 4.0)
+            v_p1[1], v_p1[2] = wx, wy
+            v_p2[1], v_p2[2] = wx + ww, wy + wh
+            dl:AddRectFilled(v_p1, v_p2, COLOR_PANEL_BG, 4.0)
         end
 
-        imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
-        imgui.SetCursorPosY(imgui.GetCursorPosY() + 2)
+        imgui.SetCursorPosX(imgui.GetCursorPosX() + PANEL_PADDING)
+        imgui.SetCursorPosY(imgui.GetCursorPosY() + TOP_PADDING)
 
         local nc = cast_state.is_item and COLOR_ITEM_TXT or COLOR_CAST_TXT
         imgui.TextColored(nc, cast_state.name ~= '' and cast_state.name
@@ -382,15 +410,19 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y, is_instant)
             end
             imgui.TextColored(COLOR_HP_TXT, cast_state.frac_str)
 
-            imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
+            imgui.SetCursorPosX(imgui.GetCursorPosX() + PANEL_PADDING)
             local cx, cy = imgui.GetCursorScreenPos()
-            imgui.Dummy(sv(v_size, cfg.bar_width, CAST_BAR_HEIGHT))
+            
+            v_size[1], v_size[2] = cfg.bar_width, CAST_BAR_HEIGHT
+            imgui.Dummy(v_size)
 
             if dl then
-                dl:AddRectFilled(sv(v_p1, cx, cy), sv(v_p2, cx+cfg.bar_width, cy+CAST_BAR_HEIGHT), COLOR_BAR_BG)
+                v_p1[1], v_p1[2] = cx, cy
+                v_p2[1], v_p2[2] = cx + cfg.bar_width, cy + CAST_BAR_HEIGHT
+                dl:AddRectFilled(v_p1, v_p2, COLOR_BAR_BG)
                 if cast_frac > 0 then
-                    dl:AddRectFilled(v_p1, sv(v_p2, cx+cfg.bar_width*cast_frac, cy+CAST_BAR_HEIGHT),
-                        cast_state.is_item and COLOR_ITEM_BAR or COLOR_CAST)
+                    v_p2[1] = cx + cfg.bar_width * cast_frac
+                    dl:AddRectFilled(v_p1, v_p2, cast_state.is_item and COLOR_ITEM_BAR or COLOR_CAST)
                 end
             end
         end
@@ -458,15 +490,16 @@ end)
 -- RENDER
 ------------------------------------------------------------
 ashita.events.register('d3d_present', 'targetbar_render', function()
-    if not show_ui[1] then return end
+    if not is_ui_visible then return end
 
     local now = os_clock()
 
-    -- cast bar percent
+    -- zero-allocation cast bar percent extraction
     local cast_frac = 0.0
     local cb = mm:GetCastBar()
     if cb then
-        local ok, pct = pcall(function() return cb:GetPercent() end)
+        _cl_cb = cb
+        local ok, pct = pcall(_get_cb_percent)
         if ok and pct then
             cast_frac = math_max(0.0, math_min(1.0, pct))
         end
@@ -494,8 +527,8 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local display_frac = show_instant and (cast_state.is_instant and 0.0 or 1.0) or cast_frac
 
     if (display_frac > 0 or show_instant) and cast_state.name ~= '' then
-        last_cast_h = 25
-        draw_cast_bar(display_frac, cfg.pos_x, cfg.pos_y - last_cast_h - 22, cast_state.is_instant)
+        last_cast_h = CAST_STACK_H
+        draw_cast_bar(display_frac, cfg.pos_x, cfg.pos_y - last_cast_h - CAST_WIN_HEIGHT, cast_state.is_instant)
     else
         last_cast_h = 0
     end
@@ -511,7 +544,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
 
     if (now - last_logic_update > UPDATE_INTERVAL)
     or (main_idx ~= last_main_idx)
-    or (sub_idx  ~= last_sub_idx) then
+    or (sub_idx  != last_sub_idx) then
         last_logic_update = now
         last_main_idx     = main_idx
         last_sub_idx      = sub_idx
@@ -530,7 +563,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     end
     if sub_data then
         draw_bar(sub_data, '##targetbar_sub', cfg.pos_x,
-            cfg.pos_y - cfg.bar_height - 30,
+            cfg.pos_y - cfg.bar_height - SUB_BAR_OFFSET,
             math_max(2, math_floor(cfg.bar_height / 2)), true,
             cast_state.name ~= '' and cast_state.target_idx == sub_idx,
             false)
@@ -549,14 +582,14 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
 
     local sub = args[2] and args[2]:lower() or 'toggle'
     if sub == 'toggle' then
-        show_ui[1] = not show_ui[1]
+        is_ui_visible = not is_ui_visible
     elseif sub == 'show' then
-        show_ui[1] = true
+        is_ui_visible = true
     elseif sub == 'hide' then
-        show_ui[1] = false
+        is_ui_visible = false
     elseif sub == 'dist' then
         cfg.show_distance = not cfg.show_distance
-        pcall(function() settings.save() end)
+        pcall(settings.save)
         print('[targetbar] distance: ' .. (cfg.show_distance and 'on' or 'off'))
     elseif sub == 'width' or sub == 'height' or sub == 'x' or sub == 'y' then
         local val = tonumber(args[3])
@@ -565,10 +598,10 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
             elseif sub == 'height' then cfg.bar_height = val
             elseif sub == 'x'      then cfg.pos_x      = val
             else                        cfg.pos_y      = val end
-            pcall(function() settings.save() end)
+            pcall(settings.save)
             print('[targetbar] ' .. sub .. ': ' .. val)
         end
     elseif sub == 'help' then
         print('[targetbar] /tbar toggle|show|hide|dist|width <n>|height <n>|x <n>|y <n>')
     end
-end)	
+end)

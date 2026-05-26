@@ -8,13 +8,10 @@ require('common')
 local bit          = require('bit') 
 local imgui        = require('imgui')
 local settings     = require('settings')
+local struct       = struct
 
-------------------------------------------------------------
--- LUA & BACKEND OPTIMIZATIONS
-------------------------------------------------------------
-local mm = AshitaCore:GetMemoryManager()
-local rm = AshitaCore:GetResourceManager()
-
+local mm            = AshitaCore:GetMemoryManager()
+local rm            = AshitaCore:GetResourceManager()
 local bit_band      = bit.band
 local bit_bor       = bit.bor
 local str_format    = string.format
@@ -24,8 +21,8 @@ local math_min      = math.min
 local math_floor    = math.floor
 local math_abs      = math.abs
 local os_clock      = os.clock
+local unpack        = struct.unpack
 
--- Pre-computed ImGui Flags
 local FLAGS_WINDOW_BASE = bit_bor(ImGuiWindowFlags_NoDecoration, ImGuiWindowFlags_AlwaysAutoResize, ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags_NoNav, ImGuiWindowFlags_NoBackground)
 local FLAGS_WINDOW_MOVE = bit_bor(FLAGS_WINDOW_BASE, ImGuiWindowFlags_NoMove)
 
@@ -45,9 +42,8 @@ local SCAN_INTERVAL     = 1.0
 local cast_state = { name = '', cast_string = '', target = '', target_color = {1,1,1,1}, target_idx = 0, is_item = false, is_instant = false, last_pct = 0, last_tick = 0, queued_time = 0, frac_str = ' 0%', last_frac_int = -1 }
 local main_target_cache, sub_target_cache, packet_target_cache, party_id_cache = {}, {}, {}, {}
 local last_logic_update, last_main_idx, last_sub_idx, last_scan_time, self_id_cache = 0, 0, 0, 0, 0
-local castbar_cache, main_data, sub_data = nil, nil, nil
+local main_data, sub_data = nil, nil
 
--- Colors (Pre-cached)
 local COLOR_PANEL_BG   = imgui.GetColorU32({0.05, 0.05, 0.05, 0.65})
 local COLOR_PANEL_BLUE = imgui.GetColorU32({0.05, 0.05, 0.35, 0.90})
 local COLOR_BAR_BG     = imgui.GetColorU32({0.18, 0.18, 0.18, 0.85})
@@ -100,10 +96,7 @@ ashita.events.register('load', 'targetbar_load', function()
 end)
 
 ashita.events.register('settings', 'settings_update', function(s) if type(s) == 'table' then cfg = s end end)
-
-ashita.events.register('unload', 'targetbar_unload', function()
-    settings.save()
-end)
+ashita.events.register('unload', 'targetbar_unload', function() settings.save() end)
 
 ------------------------------------------------------------
 -- UI HELPERS
@@ -118,7 +111,7 @@ local function refresh_party_cache(now)
     if not party then return end
     for k in pairs(party_id_cache) do party_id_cache[k] = nil end
     local sid = party:GetMemberServerId(0)
-    self_id_cache = (sid) and sid or 0
+    self_id_cache = (sid) or 0
     for i = 0, 17 do
         if party:GetMemberIsActive(i) ~= 0 then
             local sId = party:GetMemberServerId(i)
@@ -234,9 +227,9 @@ end
 ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
     local entity = mm:GetEntity()
-    local target_idx = (e.id == 0x1A) and struct.unpack('H', e.data_modified, 0x09) or struct.unpack('H', e.data_modified, 0x09) -- simplified unpack logic
-    local action_id = (e.id == 0x1A) and struct.unpack('H', e.data_modified, 0x0D) or 0
-    local category = (e.id == 0x1A) and struct.unpack('H', e.data_modified, 0x0B) or 0
+    local target_idx = (e.id == 0x1A) and unpack('H', e.data_modified, 0x09) or unpack('H', e.data_modified, 0x09)
+    local action_id = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0D) or 0
+    local category = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0B) or 0
     
     local action_name, is_item, is_instant = '', false, false
     if e.id == 0x1A then

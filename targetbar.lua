@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '.03'
+addon.version = '.0003'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -43,7 +43,16 @@ local default_cfg = {
     locked        = true,
 }
 
-local cfg = settings.load(default_cfg) or default_cfg
+local cfg = default_cfg
+
+-- Wait until Ashita signals that the addon is officially loaded and memory is ready
+ashita.events.register('load', 'targetbar_load', function()
+    cfg = settings.load(default_cfg) or default_cfg
+end)
+
+ashita.events.register('settings', 'settings_update', function(s)
+    if s ~= nil then cfg = s end
+end)
 
 ashita.events.register('settings', 'settings_update', function(s)
     if s ~= nil then cfg = s end

@@ -239,8 +239,25 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     else action_name = 'Item'; is_item = true end
     
     if action_name == '' or action_name == 'Gil' then return end
-    local tdata = (target_idx ~= 0 and entity) and parse_target_data(target_idx, packet_target_cache, false, entity, mm:GetTarget()) or nil
-    cast_state.name, cast_state.cast_string, cast_state.target, cast_state.target_color, cast_state.target_idx, cast_state.is_item, cast_state.is_instant, cast_state.queued_time = action_name, '> ' .. action_name, (tdata and entity:GetName(target_idx)) or 'Self', (tdata and tdata.name_color) or {1,1,1,1}, target_idx, is_item, is_instant, os_clock()
+
+    -- Simplified Target Logic
+    local target_name = 'Self'
+    local target_color = COLOR_PC_SELF
+
+    if not is_item then
+        -- Only parse target data for Spells/Abilities
+        local tdata = (target_idx ~= 0 and entity) and parse_target_data(target_idx, packet_target_cache, false, entity, mm:GetTarget()) or nil
+        if tdata then
+            target_name = tdata.display_name
+            target_color = tdata.name_color
+        end
+    elseif target_idx ~= 0 and entity then
+        -- If it is an item and has a valid target index, just get the name
+        target_name = entity:GetName(target_idx)
+    end
+    
+    cast_state.name, cast_state.cast_string, cast_state.target, cast_state.target_color, cast_state.target_idx, cast_state.is_item, cast_state.is_instant, cast_state.queued_time = 
+        action_name, '> ' .. action_name, target_name, target_color, target_idx, is_item, is_instant, os_clock()
 end)
 
 local show_ui, last_cast_h = {true}, 0
@@ -261,7 +278,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
 
     if (display_frac > 0 or show_instant) and cast_state.name ~= '' then
         last_cast_h = 25
-        draw_cast_bar(display_frac, cfg.pos_x, cfg.pos_y - last_cast_h - 4, cast_state.is_instant)
+        draw_cast_bar(display_frac, cfg.pos_x, cfg.pos_y - last_cast_h - 22, cast_state.is_instant)
     else last_cast_h = 0 end
 
     local targ, entity = mm:GetTarget(), mm:GetEntity()

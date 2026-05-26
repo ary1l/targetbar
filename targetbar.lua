@@ -441,10 +441,11 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
     if e.id == 0x1A and e.size < 0x0E then return end
     if e.id == 0x37 and e.size < 0x0A then return end
-    if e.id == 0x1A then
-        local current_pct = get_cast_pct()
-        if current_pct > 0.0 and current_pct < 0.99 then return end
-    end
+
+    -- Removed the current_pct block completely!
+    -- The addon's packet_in history-rollback is robust enough to 
+    -- handle rejected mid-cast button mashing. This allows Fast Cast 
+    -- spells to immediately register their new names.
 
     local target_idx  = 0
     local action_name = ''
@@ -504,43 +505,11 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     local entry         = cast_history[history_count]
     entry.name          = cast_state.name
     entry.target        = cast_state.target
-    entry.target_color = cast_state.target_color
-    entry.target_idx   = cast_state.target_idx
-    entry.is_item      = cast_state.is_item
-    entry.is_instant   = cast_state.is_instant
-    entry.time         = cast_state.queued_time
-end)
-
-local REJECT_MSGS = { [12]=true,[17]=true,[34]=true,[47]=true,[71]=true,[87]=true,[88]=true,[94]=true,[190]=true,[248]=true,[284]=true,[313]=true }
-ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
-    if e.id ~= 0x17 or e.size < 0x1A then return end
-    local msg_id = struct_unpack('H', e.data, 0x18 + 1)
-    if msg_id == 16 or msg_id == 29 then
-        cast_state.name        = ''
-        cast_state.queued_time = 0
-        history_count          = 0
-    elseif REJECT_MSGS[msg_id] then
-        if history_count > 0 then history_count = history_count - 1 end
-        local restored = false
-        if history_count > 0 then
-            local prev = cast_history[history_count]
-            if (os_clock() - prev.time) < 15.0 and get_cast_pct() > 0 then
-                cast_state.name         = prev.name
-                cast_state.target       = prev.target
-                cast_state.target_color = prev.target_color
-                cast_state.target_idx   = prev.target_idx
-                cast_state.is_item      = prev.is_item
-                cast_state.is_instant   = prev.is_instant
-                cast_state.queued_time  = prev.time
-                restored = true
-            end
-        end
-        if not restored then
-            cast_state.name        = ''
-            cast_state.queued_time = 0
-            history_count          = 0
-        end
-    end
+    entry.target_color  = cast_state.target_color
+    entry.target_idx    = cast_state.target_idx
+    entry.is_item       = cast_state.is_item
+    entry.is_instant    = cast_state.is_instant
+    entry.time          = cast_state.queued_time
 end)
 
 ------------------------------------------------------------

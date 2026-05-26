@@ -5,6 +5,7 @@ addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
 require('common')
+local bit      = require('bit') 
 local imgui    = require('imgui')
 local settings = require('settings')
 
@@ -30,9 +31,6 @@ local struct_unpack = struct.unpack
 local mm = AshitaCore:GetMemoryManager()
 local rm = AshitaCore:GetResourceManager()
 
-------------------------------------------------------------
--- SETTINGS & PERSISTENCE
-------------------------------------------------------------
 local default_cfg = {
     pos_x         = 1323,
     pos_y         = 816,
@@ -42,7 +40,7 @@ local default_cfg = {
     locked        = true,
 }
 
-local cfg               = default_cfg
+local cfg = default_cfg
 local CAST_BAR_HEIGHT   = 8
 local INSTANT_FLASH_DUR = 2.5
 local UPDATE_INTERVAL   = 0.1
@@ -50,9 +48,6 @@ local last_logic_update = 0
 local last_main_idx     = 0
 local last_sub_idx      = 0
 
-------------------------------------------------------------
--- COLORS
-------------------------------------------------------------
 local COLOR_PANEL_BG  = imgui.GetColorU32({0.05, 0.05, 0.05, 0.65})
 local COLOR_BAR_BG    = imgui.GetColorU32({0.18, 0.18, 0.18, 0.85})
 local COLOR_BAR_DEAD  = imgui.GetColorU32({0.59, 0.12, 0.12, 1.0})
@@ -85,7 +80,7 @@ local HP_GRADIENT = {
 local HP_COLOR_LUT = {}
 
 ------------------------------------------------------------
--- LOAD / UNLOAD
+-- INITIALIZATION
 ------------------------------------------------------------
 ashita.events.register('load', 'targetbar_load', function()
     local loaded = settings.load(default_cfg)
@@ -115,14 +110,18 @@ ashita.events.register('settings', 'settings_update', function(s)
     if type(s) == 'table' then cfg = s end
 end)
 
+------------------------------------------------------------
+-- CRASH FIX: EXPLICIT UNREGISTER
+------------------------------------------------------------
 ashita.events.register('unload', 'targetbar_unload', function()
-    -- nil out cached objects before unload to prevent dangling references
-    castbar_cache        = nil
-    main_data            = nil
-    sub_data             = nil
-    cast_state.name      = ''
-    cast_state.target    = ''
-    -- attempt save, guard against errors during shutdown
+    -- IMPORTANT: Unregister every event to prevent crashes
+    ashita.events.unregister('load', 'targetbar_load')
+    ashita.events.unregister('settings', 'settings_update')
+    ashita.events.unregister('packet_out', 'targetbar_packet_out')
+    ashita.events.unregister('d3d_present', 'targetbar_render')
+    ashita.events.unregister('command', 'targetbar_cmd')
+    ashita.events.unregister('unload', 'targetbar_unload')
+
     pcall(function() settings.save() end)
 end)
 

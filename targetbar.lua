@@ -87,7 +87,6 @@ local HP_GRADIENT = {
 }
 local HP_COLOR_LUT = {}
 
--- OPTIMIZATION 2: Wait until Ashita signals that the addon is officially loaded
 ashita.events.register('load', 'targetbar_load', function()
     cfg = settings.load(default_cfg) or default_cfg
     
@@ -115,13 +114,12 @@ ashita.events.register('settings', 'settings_update', function(s)
     if s ~= nil then cfg = s end
 end)
 
--- OPTIMIZATION 1B: Safely save window position to disk on exit/reload
 ashita.events.register('unload', 'targetbar_unload', function()
     settings.save()
 end)
 
 ------------------------------------------------------------
--- PRE-ALLOCATED UI VECTORS (Optimized for zero-allocation)
+-- PRE-ALLOCATED UI VECTORS
 ------------------------------------------------------------
 local v_pos  = { 0, 0 }
 local v_size = { 0, 0 }
@@ -229,7 +227,6 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets)
     local hp_pct = entity:GetHPPercent(tIdx) or 0
     local spawn  = entity:GetSpawnFlags(tIdx) or 0
     
-    -- OPTIMIZATION 3A: Distance sq check logic
     local dist_sq = entity:GetDistance(tIdx) or 0
 
     local is_pc  = (bit_band(spawn, 0x01) ~= 0)
@@ -288,8 +285,7 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets)
         out_cache.hp_frac  = math_max(0.0, math_min(1.0, hp_pct / 100.0))
         out_cache.bar_color = out_cache.dead and COLOR_BAR_DEAD or HP_COLOR_LUT[math_max(0, math_min(100, hp_pct))]
     end
-
-    -- OPTIMIZATION 3B: Use stored distance squared and check thresholds
+    
     if not out_cache.last_dist_sq or math_abs(out_cache.last_dist_sq - dist_sq) > 1.0 then
         local dist = math_sqrt(dist_sq)
         out_cache.last_dist_sq = dist_sq
@@ -360,7 +356,6 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, spell_name)
             end
         end
 
-        -- OPTIMIZATION 1A: Stopped heavy disc writing inside draw loop
         if not cfg.locked and not is_sub then
             local new_x, new_y = imgui.GetWindowPos()
             if cfg.pos_x ~= new_x or cfg.pos_y ~= new_y then
@@ -441,11 +436,6 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
     if e.id == 0x1A and e.size < 0x0E then return end
     if e.id == 0x37 and e.size < 0x0A then return end
-
-    -- Removed the current_pct block completely!
-    -- The addon's packet_in history-rollback is robust enough to 
-    -- handle rejected mid-cast button mashing. This allows Fast Cast 
-    -- spells to immediately register their new names.
 
     local target_idx  = 0
     local action_name = ''

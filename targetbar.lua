@@ -98,7 +98,6 @@ local default_cfg = {
     bar_width     = 325,
     bar_height    = 14,
     show_distance = true,
-    locked        = true,
 }
 
 local cfg               = default_cfg
@@ -457,7 +456,6 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
     if sub == 'toggle' then show_ui[1] = not show_ui[1]
     elseif sub == 'show' then show_ui[1] = true
     elseif sub == 'hide' then show_ui[1] = false
-    elseif sub == 'lock' then cfg.locked = not cfg.locked; pcall(function() settings.save() end); print('[targetbar] lock: ' .. tostring(cfg.locked))
     elseif sub == 'dist' then cfg.show_distance = not cfg.show_distance; pcall(function() settings.save() end); print('[targetbar] distance: ' .. (cfg.show_distance and 'on' or 'off'))
     elseif sub == 'width' and args[3] then cfg.bar_width = tonumber(args[3]) or cfg.bar_width; pcall(function() settings.save() end); print('[targetbar] width: ' .. cfg.bar_width)
     elseif sub == 'height' and args[3] then cfg.bar_height = tonumber(args[3]) or cfg.bar_height; pcall(function() settings.save() end); print('[targetbar] height: ' .. cfg.bar_height)
@@ -465,7 +463,6 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
     elseif sub == 'y' and args[3] then cfg.pos_y = tonumber(args[3]) or cfg.pos_y; pcall(function() settings.save() end); print('[targetbar] y: ' .. cfg.pos_y)
     elseif sub == 'help' then
         print('[targetbar] /tbar toggle|show|hide')
-        print('[targetbar] /tbar lock      - toggle position lock')
         print('[targetbar] /tbar dist      - toggle distance display')
         print('[targetbar] /tbar width  <n>  - set bar width')
         print('[targetbar] /tbar height <n>  - set bar height')

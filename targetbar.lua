@@ -32,7 +32,7 @@ for i = 0, 100 do PERCENT_STR_LUT[i] = tostring(i) .. '%' end
 ------------------------------------------------------------
 -- CONFIGURATION & STATE
 ------------------------------------------------------------
-local default_cfg = { pos_x = 1125, pos_y = 816, bar_width = 325, bar_height = 14, show_distance = true, locked = false }
+local default_cfg = { pos_x = 1010, pos_y = 820, bar_width = 400, bar_height = 14, show_distance = true, locked = false }
 local cfg = default_cfg
 local CAST_BAR_HEIGHT   = 8
 local INSTANT_FLASH_DUR = 2.5

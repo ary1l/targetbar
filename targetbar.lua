@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '1.1'
+addon.version = '.03'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -24,6 +24,9 @@ local math_abs   = math.abs
 local bit_band   = bit.band
 local bit_bor    = bit.bor
 local str_format = string.format
+local pcall      = pcall
+local struct_unpack = struct.unpack
+local table_insert  = table.insert
 
 local mm = AshitaCore:GetMemoryManager()
 local rm = AshitaCore:GetResourceManager()
@@ -47,16 +50,16 @@ ashita.events.register('settings', 'settings_update', function(s)
 end)
 
 local CAST_BAR_HEIGHT   = 8
-local INSTANT_FLASH_DUR = 2.5 
+local INSTANT_FLASH_DUR = 2.5
 
 -- Logic Throttling Variables
-local UPDATE_INTERVAL   = 0.1 
+local UPDATE_INTERVAL   = 0.1
 local last_logic_update = 0
 local last_main_idx     = 0
 local last_sub_idx      = 0
 
 ------------------------------------------------------------
--- PRE-ALLOCATED UI VECTORS
+-- PRE-ALLOCATED UI VECTORS (Optimized for zero-allocation)
 ------------------------------------------------------------
 local v_pos  = { 0, 0 }
 local v_size = { 0, 0 }
@@ -93,16 +96,17 @@ local party_id_cache      = {}
 local SCAN_INTERVAL  = 1.0
 local last_scan_time = 0
 local self_id_cache  = 0
+local castbar_cache = nil
 
 local function refresh_party_cache(now)
     if now - last_scan_time < SCAN_INTERVAL then return end
     last_scan_time = now
-    
+
     local party = mm:GetParty()
     if not party then return end
-    
+
     for k in pairs(party_id_cache) do party_id_cache[k] = nil end
-    
+
     self_id_cache = party:GetMemberServerId(0) or 0
     for i = 0, 17 do
         if party:GetMemberIsActive(i) ~= 0 then
@@ -112,6 +116,26 @@ local function refresh_party_cache(now)
             end
         end
     end
+end
+
+------------------------------------------------------------
+-- NAMED PCALL HELPERS
+------------------------------------------------------------
+local function _get_castbar_percent(cb) return cb:GetPercent() end
+local function _get_claim_status(e_idx) return e_idx[1]:GetClaimStatus(e_idx[2]) end
+local function _get_locked_flags(t)     return t:GetLockedOnFlags() end
+
+local function get_cast_pct()
+    local cb = castbar_cache
+    if not cb then
+        cb = mm:GetCastBar()
+        castbar_cache = cb
+    end
+    if not cb then return 0 end
+    local ok, pct = pcall(_get_castbar_percent, cb)
+    if ok and type(pct) == 'number' then return pct end
+    castbar_cache = nil
+    return 0
 end
 
 ------------------------------------------------------------
@@ -182,10 +206,12 @@ end
 ------------------------------------------------------------
 -- PARSE TARGET DATA
 ------------------------------------------------------------
+local _claim_args = { nil, 0 }
+
 local function parse_target_data(tIdx, out_cache, force_sub_brackets)
     if not tIdx or tIdx == 0 then return nil end
     local entity = mm:GetEntity()
-    local targ    = mm:GetTarget()
+    local targ   = mm:GetTarget()
     if not entity or not targ then return nil end
 
     local sId = entity:GetServerId(tIdx)
@@ -204,18 +230,20 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets)
     local is_real_npc = false
 
     if is_pc then
-        if     sId == self_id_cache       then name_color = COLOR_PC_SELF
-        elseif party_id_cache[sId] == 'party'    then name_color = COLOR_PC_PARTY
+        if     sId == self_id_cache             then name_color = COLOR_PC_SELF
+        elseif party_id_cache[sId] == 'party'   then name_color = COLOR_PC_PARTY
         elseif party_id_cache[sId] == 'alliance' then name_color = COLOR_PC_ALLY
-        else                                          name_color = COLOR_PC_OTHER end
+        else                                         name_color = COLOR_PC_OTHER end
     elseif is_npc and not is_mob then
         name_color  = COLOR_NPC
         is_real_npc = true
     else
         local claim_status = 0
-        local ok, cs = pcall(function() return entity:GetClaimStatus(tIdx) end)
+        _claim_args[1] = entity
+        _claim_args[2] = tIdx
+        local ok, cs = pcall(_get_claim_status, _claim_args)
         if ok and cs then claim_status = bit_band(cs, 0xFFFF) end
-        
+
         if claim_status == 0 then
             name_color = COLOR_ENEMY
         elseif claim_status == bit_band(self_id_cache, 0xFFFF) then
@@ -231,7 +259,7 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets)
 
     local is_locked = force_sub_brackets
     if not force_sub_brackets then
-        local ok2, flags = pcall(function() return targ:GetLockedOnFlags() end)
+        local ok2, flags = pcall(_get_locked_flags, targ)
         if ok2 and type(flags) == 'number' then
             is_locked = (bit_band(flags, 0x01) ~= 0)
         end
@@ -244,10 +272,10 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets)
     end
 
     if out_cache.hp_pct ~= hp_pct then
-        out_cache.hp_pct    = hp_pct
-        out_cache.hp_str    = tostring(hp_pct) .. '%'
-        out_cache.dead      = (hp_pct == 0)
-        out_cache.hp_frac   = math_max(0.0, math_min(1.0, hp_pct / 100.0))
+        out_cache.hp_pct   = hp_pct
+        out_cache.hp_str   = tostring(hp_pct) .. '%'
+        out_cache.dead     = (hp_pct == 0)
+        out_cache.hp_frac  = math_max(0.0, math_min(1.0, hp_pct / 100.0))
         out_cache.bar_color = out_cache.dead and COLOR_BAR_DEAD or HP_COLOR_LUT[math_max(0, math_min(100, hp_pct))]
     end
 
@@ -309,9 +337,9 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, spell_name)
 
         imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
         local cx, cy = imgui.GetCursorScreenPos()
-        
+
         imgui.Dummy(set_vec(v_size, cfg.bar_width, bar_h))
-        
+
         if dl then
             dl:AddRectFilled(set_vec(v_p1, cx, cy), set_vec(v_p2, cx + cfg.bar_width, cy + bar_h), COLOR_BAR_BG)
             if not data.is_real_npc and data.hp_frac > 0 then
@@ -352,27 +380,27 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y, is_instant)
 
         local name_col = cast_state.is_item and COLOR_ITEM_TXT or COLOR_CAST_TXT
         local bar_col  = cast_state.is_item and COLOR_ITEM_BAR or COLOR_CAST
-        
+
         imgui.TextColored(name_col, cast_state.name ~= '' and cast_state.name or (cast_state.is_item and 'Item' or 'Action'))
         imgui.SameLine()
         imgui.TextColored(COLOR_ARROW, ' -> ')
         imgui.SameLine()
         imgui.TextColored(cast_state.target_color, cast_state.target ~= '' and cast_state.target or 'Self')
-        
+
         if not is_instant then
             imgui.SameLine()
             local frac_int = math_floor(cast_frac * 100)
             if cast_state.last_frac_int ~= frac_int then
                 cast_state.last_frac_int = frac_int
-                cast_state.frac_str      = str_format(' %d%%', frac_int)
+                cast_state.frac_str     = str_format(' %d%%', frac_int)
             end
             imgui.TextColored(COLOR_HP_TXT, cast_state.frac_str)
 
             imgui.SetCursorPosX(imgui.GetCursorPosX() + 4)
             local cx, cy = imgui.GetCursorScreenPos()
-            
+
             imgui.Dummy(set_vec(v_size, cfg.bar_width, CAST_BAR_HEIGHT))
-            
+
             if dl then
                 dl:AddRectFilled(set_vec(v_p1, cx, cy), set_vec(v_p2, cx + cfg.bar_width, cy + CAST_BAR_HEIGHT), COLOR_BAR_BG)
                 if cast_frac > 0 then
@@ -396,14 +424,6 @@ end
 local cast_history  = {}
 local history_count = 0
 
-local function get_cast_pct()
-    local castbar = mm:GetCastBar()
-    if not castbar then return 0 end
-    local ok, pct = pcall(function() return castbar:GetPercent() end)
-    if ok and type(pct) == 'number' then return pct end
-    return 0
-end
-
 ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
     if e.id == 0x1A and e.size < 0x0E then return end
@@ -412,15 +432,17 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
         local current_pct = get_cast_pct()
         if current_pct > 0.0 and current_pct < 0.99 then return end
     end
-    local target_idx = 0
+
+    local target_idx  = 0
     local action_name = ''
-    local is_item = false
-    local is_instant = false
+    local is_item     = false
+    local is_instant  = false
 
     if e.id == 0x1A then
-        target_idx = struct.unpack('H', e.data_modified, 0x08 + 1)
-        local action_id = struct.unpack('H', e.data_modified, 0x0C + 1)
-        local category = struct.unpack('H', e.data_modified, 0x0A + 1)
+        target_idx    = struct_unpack('H', e.data_modified, 0x08 + 1)
+        local action_id = struct_unpack('H', e.data_modified, 0x0C + 1)
+        local category  = struct_unpack('H', e.data_modified, 0x0A + 1)
+
         if category == 3 then
             local res = rm:GetSpellById(action_id)
             action_name = (res and res.Name and (res.Name[1] or res.Name[0])) or ''
@@ -435,74 +457,75 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
             is_instant = true
         elseif category == 5 then
             action_name = 'Item'
-            is_item = true
-            is_instant = false
+            is_item     = true
+            is_instant  = false
         end
     elseif e.id == 0x37 then
-        target_idx = struct.unpack('H', e.data_modified, 0x08 + 1)
+        target_idx  = struct_unpack('H', e.data_modified, 0x08 + 1)
         action_name = 'Item'
-        is_item = true
-        is_instant = false
+        is_item     = true
+        is_instant  = false
     end
 
     if action_name == '' or action_name == 'Gil' then return end
-    local entity = mm:GetEntity()
-    local target_name = 'Self'
+
+    local entity       = mm:GetEntity()
+    local target_name  = 'Self'
     local target_color = COLOR_PC_SELF
     if target_idx ~= 0 and entity then
         local tdata = parse_target_data(target_idx, packet_target_cache, false)
-        target_name = entity:GetName(target_idx) or 'Unknown'
+        target_name  = entity:GetName(target_idx) or 'Unknown'
         target_color = (tdata and tdata.name_color) or {1,1,1,1}
     end
 
-    cast_state.name = action_name
-    cast_state.target = target_name
+    cast_state.name         = action_name
+    cast_state.target       = target_name
     cast_state.target_color = target_color
-    cast_state.target_idx = target_idx
-    cast_state.is_item = is_item
-    cast_state.is_instant = is_instant
-    cast_state.queued_time = os_clock()
+    cast_state.target_idx   = target_idx
+    cast_state.is_item      = is_item
+    cast_state.is_instant   = is_instant
+    cast_state.queued_time  = os_clock()
 
     history_count = history_count + 1
     if not cast_history[history_count] then cast_history[history_count] = {} end
-    local entry = cast_history[history_count]
-    entry.name = cast_state.name
-    entry.target = cast_state.target
+    local entry         = cast_history[history_count]
+    entry.name          = cast_state.name
+    entry.target        = cast_state.target
     entry.target_color = cast_state.target_color
-    entry.target_idx = cast_state.target_idx
-    entry.is_item = cast_state.is_item
-    entry.is_instant = cast_state.is_instant
-    entry.time = cast_state.queued_time
+    entry.target_idx   = cast_state.target_idx
+    entry.is_item      = cast_state.is_item
+    entry.is_instant   = cast_state.is_instant
+    entry.time         = cast_state.queued_time
 end)
 
 local REJECT_MSGS = { [12]=true,[17]=true,[34]=true,[47]=true,[71]=true,[87]=true,[88]=true,[94]=true,[190]=true,[248]=true,[284]=true,[313]=true }
 ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
-    if e.id ~= 0x17 or e.size < 0x1A then return end 
-    local msg_id = struct.unpack('H', e.data, 0x18 + 1)
+    if e.id ~= 0x17 or e.size < 0x1A then return end
+    local msg_id = struct_unpack('H', e.data, 0x18 + 1)
     if msg_id == 16 or msg_id == 29 then
-        cast_state.name = ''
+        cast_state.name        = ''
         cast_state.queued_time = 0
-        history_count = 0
+        history_count          = 0
     elseif REJECT_MSGS[msg_id] then
         if history_count > 0 then history_count = history_count - 1 end
         local restored = false
         if history_count > 0 then
             local prev = cast_history[history_count]
             if (os_clock() - prev.time) < 15.0 and get_cast_pct() > 0 then
-                cast_state.name = prev.name
-                cast_state.target = prev.target
+                cast_state.name         = prev.name
+                cast_state.target       = prev.target
                 cast_state.target_color = prev.target_color
-                cast_state.target_idx = prev.target_idx
-                cast_state.is_item = prev.is_item
-                cast_state.is_instant = prev.is_instant
-                cast_state.queued_time = prev.time
+                cast_state.target_idx   = prev.target_idx
+                cast_state.is_item      = prev.is_item
+                cast_state.is_instant   = prev.is_instant
+                cast_state.queued_time  = prev.time
                 restored = true
             end
         end
         if not restored then
-            cast_state.name = ''
+            cast_state.name        = ''
             cast_state.queued_time = 0
-            history_count = 0
+            history_count          = 0
         end
     end
 end)
@@ -510,34 +533,41 @@ end)
 ------------------------------------------------------------
 -- CORE MAIN RENDERING PROCESS LOOP
 ------------------------------------------------------------
-local show_ui = { true }
+local show_ui   = { true }
 local last_cast_h = 0
-local main_data = nil
-local sub_data  = nil
+local main_data   = nil
+local sub_data    = nil
 
 ashita.events.register('d3d_present', 'targetbar_render', function()
     if not show_ui[1] then return end
 
     local now = os_clock()
-    
-    -- Cast Bar Logic (Independent of target data)
+
     local cast_frac = 0.0
-    local castbar = mm:GetCastBar()
-    if castbar then
-        local ok, pct = pcall(function() return castbar:GetPercent() end)
-        if ok and pct and pct > 0 then cast_frac = math_min(1.0, pct) end
+    local cb = castbar_cache
+    if not cb then
+        cb = mm:GetCastBar()
+        castbar_cache = cb
+    end
+    if cb then
+        local ok, pct = pcall(_get_castbar_percent, cb)
+        if ok and pct and pct > 0 then
+            cast_frac = math_min(1.0, pct)
+        elseif not ok then
+            castbar_cache = nil
+        end
     end
 
     if cast_frac > 0 then
         if cast_frac ~= cast_state.last_pct then
-            cast_state.last_pct = cast_frac
+            cast_state.last_pct  = cast_frac
             cast_state.last_tick = now
         else
             local timeout = (cast_frac >= 0.99) and 0.2 or 0.75
             if (now - cast_state.last_tick) > timeout then cast_frac = 0.0 end
         end
     else
-        cast_state.last_pct = 0
+        cast_state.last_pct  = 0
         cast_state.last_tick = now
     end
 
@@ -556,26 +586,24 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local targ = mm:GetTarget()
     if not targ then return end
     local main_idx = targ:GetTargetIndex(0)
-    
-    local sub_active_raw = targ:GetIsSubTargetActive()
-    local is_sub_active = (sub_active_raw ~= nil and sub_active_raw ~= 0 and sub_active_raw ~= false)
-    local sub_idx = is_sub_active and targ:GetTargetIndex(1) or 0
 
-    -- Only refresh data if interval passed OR target has changed
+    local sub_active_raw = targ:GetIsSubTargetActive()
+    local is_sub_active  = (sub_active_raw ~= nil and sub_active_raw ~= 0 and sub_active_raw ~= false)
+    local sub_idx        = is_sub_active and targ:GetTargetIndex(1) or 0
+
     if (now - last_logic_update > UPDATE_INTERVAL) or (main_idx ~= last_main_idx) or (sub_idx ~= last_sub_idx) then
         last_logic_update = now
-        last_main_idx = main_idx
-        last_sub_idx = sub_idx
+        last_main_idx     = main_idx
+        last_sub_idx      = sub_idx
         refresh_party_cache(now)
-        
+
         main_data = (main_idx ~= 0) and parse_target_data(main_idx, main_target_cache, false) or nil
         sub_data  = (sub_idx ~= 0 and sub_idx ~= main_idx) and parse_target_data(sub_idx, sub_target_cache, true) or nil
     end
 
-    -- Rendering from cached data
     local current_y = cfg.pos_y
     if sub_data then
-        local sub_bh = math_max(2, math_floor(cfg.bar_height / 2))
+        local sub_bh    = math_max(2, math_floor(cfg.bar_height / 2))
         local sub_spell = (cast_state.name ~= '' and cast_state.target_idx == sub_idx) and cast_state.name or nil
         local h = draw_bar(sub_data, '##targetbar_sub', cfg.pos_x, current_y, sub_bh, true, sub_spell)
         current_y = current_y - h - 4
@@ -601,19 +629,19 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
     if     sub == 'toggle'   then show_ui[1] = not show_ui[1]
     elseif sub == 'show'     then show_ui[1] = true
     elseif sub == 'hide'     then show_ui[1] = false
-    elseif sub == 'lock'     then 
+    elseif sub == 'lock'     then
         cfg.locked = not cfg.locked
         settings.save()
         print('[targetbar] lock: ' .. tostring(cfg.locked))
-    elseif sub == 'dist'     then 
+    elseif sub == 'dist'     then
         cfg.show_distance = not cfg.show_distance
         settings.save()
         print('[targetbar] distance: ' .. (cfg.show_distance and 'on' or 'off'))
-    elseif sub == 'width'  and args[3] then 
+    elseif sub == 'width'  and args[3] then
         cfg.bar_width  = tonumber(args[3]) or cfg.bar_width
         settings.save()
         print('[targetbar] width: '  .. cfg.bar_width)
-    elseif sub == 'height' and args[3] then 
+    elseif sub == 'height' and args[3] then
         cfg.bar_height = tonumber(args[3]) or cfg.bar_height
         settings.save()
         print('[targetbar] height: ' .. cfg.bar_height)

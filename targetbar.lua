@@ -12,7 +12,6 @@ local settings = require('settings')
 local mm = AshitaCore:GetMemoryManager()
 local rm = AshitaCore:GetResourceManager()
 
--- localize everything used in hot paths
 local bit_band   = bit.band
 local bit_bor    = bit.bor
 local str_format = string.format
@@ -28,7 +27,7 @@ local pairs      = pairs
 local unpack     = struct.unpack
 
 ------------------------------------------------------------
--- WINDOW FLAGS (computed once; position always via commands)
+-- WINDOW FLAGS
 ------------------------------------------------------------
 local FLAGS_LOCKED = bit_bor(
     ImGuiWindowFlags_NoDecoration, ImGuiWindowFlags_AlwaysAutoResize,
@@ -50,7 +49,6 @@ local INSTANT_FLASH   = 2.5
 local UPDATE_INTERVAL  = 0.15
 local SCAN_INTERVAL    = 1.0
 
--- layout: magic numbers isolated here
 local PANEL_PADDING    = 4     -- left cursor indent inside each window
 local TOP_PADDING      = 2     -- top cursor nudge for main bar
 local CAST_WIN_HEIGHT  = 22    -- imgui chrome + content height of the cast bar window
@@ -130,12 +128,12 @@ local v_pos  = {0, 0}
 local v_size = {0, 0}
 local v_p1   = {0, 0}
 local v_p2   = {0, 0}
-local p_open = {true}         -- reused for every imgui.Begin call
+local p_open = {true} 
 
 ------------------------------------------------------------
 -- MODULE-LEVEL pcall TARGETS (no per-call closure allocs)
 ------------------------------------------------------------
-local _cl_entity, _cl_tIdx, _cl_targ, _cl_cb   -- scratch refs for pcall targets
+local _cl_entity, _cl_tIdx, _cl_targ, _cl_cb
 
 local function _get_claim_status() return _cl_entity:GetClaimStatus(_cl_tIdx) end
 local function _get_locked_flags() return _cl_targ:GetLockedOnFlags()          end

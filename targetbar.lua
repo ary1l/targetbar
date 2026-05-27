@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '1.5'
+addon.version = '.060'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -11,6 +11,8 @@ local settings = require('settings')
 
 local mm = AshitaCore:GetMemoryManager()
 local rm = AshitaCore:GetResourceManager()
+
+local pMenuHelp = ashita.memory.find(0, 0, '5350E8????????5F885D??5E5D5BC3A1????????85C0????538BCDE8', 16, 0)
 
 local bit_band   = bit.band
 local bit_bor    = bit.bor
@@ -116,7 +118,8 @@ local last_main_idx     = 0
 local last_sub_idx      = 0
 local last_scan_time    = 0
 local self_id_cache     = 0
-local self_id_masked    = 0   -- cached bit_band(self_id_cache, 0xFFFF)
+local self_id_masked    = 0
+local last_menu_text    = ''
 
 local main_data      = nil
 local sub_data       = nil
@@ -124,7 +127,7 @@ local last_cast_h    = 0
 local is_ui_visible  = true
 
 ------------------------------------------------------------
--- PRE-ALLOCATED VECTORS & TABLES (zero alloc draw calls)
+-- PRE-ALLOCATED VECTORS
 ------------------------------------------------------------
 local v_pos  = {0, 0}
 local v_size = {0, 0}
@@ -166,10 +169,33 @@ end)
 ashita.events.register('unload', 'targetbar_unload', function()
     main_data = nil
     sub_data  = nil
-    cast_state.name        = ''
+    cast_state.name      = ''
     cast_state.cast_string = ''
     pcall(settings.save)
 end)
+
+------------------------------------------------------------
+-- UTILITY: MENU HELP TEXT FETCH
+------------------------------------------------------------
+local function GetMenuHelpText()
+    if pMenuHelp == 0 then return '' end
+    local offset = ashita.memory.read_uint32(pMenuHelp)
+    if offset == 0 then return '' end
+    offset = ashita.memory.read_uint32(offset)
+    if offset == 0 then return '' end
+    offset = ashita.memory.read_uint32(offset + 0xEC)
+    if offset ~= 0 then
+        local str = ashita.memory.read_string(offset, 256)
+        if str then
+            local null_pos = str:find('\x00')
+            if null_pos then
+                return str:sub(1, null_pos - 1)
+            end
+            return str
+        end
+    end
+    return ''
+end
 
 ------------------------------------------------------------
 -- PARTY CACHE
@@ -245,7 +271,6 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         end
     end
 
-    -- lock indicator
     local is_locked = force_sub_brackets
     if not force_sub_brackets then
         local lf = targ:GetLockedOnFlags()
@@ -254,7 +279,6 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         end
     end
 
-    -- name (only reformat on change)
     local cur_name = entity:GetName(tIdx) or '???'
     if out_cache.raw_name ~= cur_name or out_cache.is_locked ~= is_locked then
         out_cache.raw_name     = cur_name
@@ -262,7 +286,6 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         out_cache.display_name = is_locked and ('<' .. cur_name .. '>') or cur_name
     end
 
-    -- hp (only reformat on change)
     if out_cache.hp_pct ~= hp_pct then
         out_cache.hp_pct    = hp_pct
         out_cache.hp_str    = PERCENT_STR_LUT[hp_pct] or (tostring(hp_pct) .. '%')
@@ -272,13 +295,12 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
                             or HP_COLOR_LUT[math_max(0, math_min(100, hp_pct))]
     end
 
-    -- distance: percentage-based threshold logic
     if not out_cache.last_dist_sq
     or math_abs(out_cache.last_dist_sq - dist_sq) > math_max(1.0, out_cache.last_dist_sq * 0.02) then
         out_cache.last_dist_sq = dist_sq
         out_cache.dist_str     = str_format('%.1f', math_sqrt(dist_sq))
         out_cache.dist_color   = dist_sq <= 441.0  and COLOR_DIST_NEAR
-                              or (dist_sq <= 2500.0 and COLOR_DIST_MID or COLOR_DIST_FAR)
+                                or (dist_sq <= 2500.0 and COLOR_DIST_MID or COLOR_DIST_FAR)
     end
 
     out_cache.name_color  = name_color
@@ -290,7 +312,7 @@ end
 ------------------------------------------------------------
 -- DRAW: HP BAR
 ------------------------------------------------------------
-local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, force_blue)
+local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, force_blue, menu_text)
     v_pos[1], v_pos[2] = pos_x, pos_y
     imgui.SetNextWindowPos(v_pos, ImGuiCond_Always)
     
@@ -311,13 +333,11 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, fo
         imgui.SetCursorPosX(imgui.GetCursorPosX() + PANEL_PADDING)
         if not is_sub then imgui.SetCursorPosY(imgui.GetCursorPosY() + TOP_PADDING) end
 
-        -- 1. Distance
         if cfg.show_distance and not data.is_self then
             imgui.TextColored(data.dist_color, data.dist_str)
             imgui.SameLine()
         end
 
-        -- 2. HP / DEAD
         if not data.is_real_npc then
             if data.dead then
                 imgui.TextColored(COLOR_DEAD_TXT, 'DEAD')
@@ -327,10 +347,14 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, fo
             imgui.SameLine()
         end
 
-        -- 3. Name
         imgui.TextColored(data.name_color, data.display_name)
 
-        -- 4. Spell / Item label
+        -- Renders Menu Text if present
+        if force_blue and menu_text and menu_text ~= '' then
+            imgui.SameLine()
+            imgui.TextColored(COLOR_CAST_TXT, menu_text)
+        end
+
         if has_spell then
             imgui.SameLine()
             imgui.TextColored(
@@ -465,9 +489,9 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
         target_name = entity:GetName(target_idx) or 'Unknown'
     end
 
-    cast_state.name         = action_name
-    cast_state.cast_string  = '> ' .. action_name
-    cast_state.target       = target_name
+    cast_state.name          = action_name
+    cast_state.cast_string   = '> ' .. action_name
+    cast_state.target        = target_name
     cast_state.target_color = target_color
     cast_state.target_idx   = target_idx
     cast_state.is_item      = is_item
@@ -483,7 +507,6 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
 
     local now = os_clock()
 
-    -- zero-allocation cast bar percent extraction (without pcall)
     local cast_frac = 0.0
     local cb = mm:GetCastBar()
     if cb then
@@ -509,7 +532,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local show_instant = cast_frac == 0.0 and cast_state.name ~= ''
                          and (now - cast_state.queued_time) < INSTANT_FLASH
     if cast_frac == 0.0 and not show_instant then
-        cast_state.name        = ''
+        cast_state.name       = ''
         cast_state.cast_string = ''
     end
     local display_frac = show_instant and (cast_state.is_instant and 0.0 or 1.0) or cast_frac
@@ -528,7 +551,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local main_idx = targ:GetTargetIndex(0)
     local sub_raw  = targ:GetIsSubTargetActive()
     local sub_idx  = (sub_raw ~= nil and sub_raw ~= 0 and sub_raw ~= false)
-                     and targ:GetTargetIndex(1) or 0
+                      and targ:GetTargetIndex(1) or 0
 
     if (now - last_logic_update > UPDATE_INTERVAL)
     or (main_idx ~= last_main_idx)
@@ -539,22 +562,37 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         refresh_party_cache(now)
         main_data = (main_idx ~= 0)
             and parse_target_data(main_idx, main_target_cache, false, entity, targ) or nil
-        sub_data  = (sub_idx ~= 0 and sub_idx ~= main_idx)
+            
+        sub_data  = (sub_idx ~= 0)
             and parse_target_data(sub_idx, sub_target_cache, true, entity, targ) or nil
+            
+        -- Logic to capture the Menu Text
+        if sub_data then
+            local raw_text = GetMenuHelpText()
+            if raw_text ~= '' then
+                last_menu_text = '(' .. raw_text .. ')'
+            else
+                last_menu_text = ''
+            end
+        else
+            last_menu_text = ''
+        end
     end
 
     if main_data then
         draw_bar(main_data, '##targetbar_main', cfg.pos_x, cfg.pos_y,
             cfg.bar_height, false,
             cast_state.name ~= '' and cast_state.target_idx == main_idx,
-            sub_data ~= nil)
+            sub_data ~= nil,
+            last_menu_text)
     end
     if sub_data then
         draw_bar(sub_data, '##targetbar_sub', cfg.pos_x,
             cfg.pos_y - cfg.bar_height - SUB_BAR_OFFSET,
             math_max(2, math_floor(cfg.bar_height / 2)), true,
             cast_state.name ~= '' and cast_state.target_idx == sub_idx,
-            false)
+            false,
+            '')
     end
 end)
 

@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '.060'
+addon.version = '1.0'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -13,6 +13,26 @@ local mm = AshitaCore:GetMemoryManager()
 local rm = AshitaCore:GetResourceManager()
 
 local pMenuHelp = ashita.memory.find(0, 0, '5350E8????????5F885D??5E5D5BC3A1????????85C0????538BCDE8', 16, 0)
+
+-- API Localizations (Micro-Optimization)
+local mem_read_uint32      = ashita.memory.read_uint32
+local mem_read_string      = ashita.memory.read_string
+
+local igSetNextWindowPos   = imgui.SetNextWindowPos
+local igSetNextWindowSize  = imgui.SetNextWindowSize
+local igBegin              = imgui.Begin
+local igEnd                = imgui.End
+local igGetWindowDrawList  = imgui.GetWindowDrawList
+local igGetWindowPos       = imgui.GetWindowPos
+local igGetWindowSize      = imgui.GetWindowSize
+local igSetCursorPosX      = imgui.SetCursorPosX
+local igGetCursorPosX      = imgui.GetCursorPosX
+local igSetCursorPosY      = imgui.SetCursorPosY
+local igGetCursorPosY      = imgui.GetCursorPosY
+local igTextColored        = imgui.TextColored
+local igSameLine           = imgui.SameLine
+local igGetCursorScreenPos = imgui.GetCursorScreenPos
+local igDummy              = imgui.Dummy
 
 local bit_band   = bit.band
 local bit_bor    = bit.bor
@@ -46,25 +66,25 @@ local default_cfg = {
     pos_x = 1010, pos_y = 820, bar_width = 400, bar_height = 14,
     show_distance = true,
 }
-local cfg             = default_cfg
+local cfg = default_cfg
 
-local CAST_BAR_HEIGHT  = 8
-local INSTANT_FLASH    = 2.5
-local UPDATE_INTERVAL  = 0.15
-local SCAN_INTERVAL    = 1.0
+local CAST_BAR_HEIGHT = 8
+local INSTANT_FLASH   = 2.5
+local UPDATE_INTERVAL = 0.15
+local SCAN_INTERVAL   = 1.0
 
-local PANEL_PADDING    = 4     -- left cursor indent inside each window
-local TOP_PADDING      = 2     -- top cursor nudge for main bar
-local CAST_WIN_HEIGHT  = 22    -- imgui chrome + content height of the cast bar window
-local CAST_STACK_H     = 25    -- height reserved when cast bar is visible (for stacking offset)
-local SUB_BAR_OFFSET   = 30    -- vertical gap between sub-target bar and main bar
+local PANEL_PADDING   = 4
+local TOP_PADDING     = 2
+local CAST_WIN_HEIGHT = 22
+local CAST_STACK_H    = 25
+local SUB_BAR_OFFSET  = 30
 
 ------------------------------------------------------------
 -- COLORS
 ------------------------------------------------------------
-local COLOR_PANEL_BG   = imgui.GetColorU32({0.05, 0.05, 0.05, 0.65})
-local COLOR_PANEL_BLUE = imgui.GetColorU32({0.05, 0.05, 0.35, 0.90})
-local COLOR_BAR_BG     = imgui.GetColorU32({0.18, 0.18, 0.18, 0.85})
+local COLOR_PANEL_BG   = imgui.GetColorU32({0.05, 0.05, 0.05, 0.45})
+local COLOR_PANEL_BLUE = imgui.GetColorU32({0.05, 0.05, 0.35, 0.35})
+local COLOR_BAR_BG     = imgui.GetColorU32({0.18, 0.18, 0.18, 0.0})
 local COLOR_BAR_DEAD   = imgui.GetColorU32({0.59, 0.12, 0.12, 1.0})
 local COLOR_CAST       = imgui.GetColorU32({0.20, 0.75, 0.20, 1.0})
 local COLOR_ITEM_BAR   = imgui.GetColorU32({0.72, 0.46, 1.00, 1.0})
@@ -93,7 +113,6 @@ local HP_GRADIENT = {
     {at=0.00, r=0.90, g=0.10, b=0.10},
 }
 
--- pre-baked LUTs built on load
 local HP_COLOR_LUT    = {}
 local PERCENT_STR_LUT = {}
 for i = 0, 100 do PERCENT_STR_LUT[i] = tostring(i) .. '%' end
@@ -113,18 +132,19 @@ local sub_target_cache    = {}
 local packet_target_cache = {}
 local party_id_cache      = {}
 
-local last_logic_update = 0
-local last_main_idx     = 0
-local last_sub_idx      = 0
-local last_scan_time    = 0
-local self_id_cache     = 0
-local self_id_masked    = 0
-local last_menu_text    = ''
+local last_logic_update     = 0
+local last_main_idx         = 0
+local last_sub_idx          = 0
+local last_sub_idx_for_menu = -1
+local last_scan_time        = 0
+local self_id_cache         = 0
+local self_id_masked        = 0
+local last_menu_text        = ''
 
-local main_data      = nil
-local sub_data       = nil
-local last_cast_h    = 0
-local is_ui_visible  = true
+local main_data     = nil
+local sub_data      = nil
+local last_cast_h   = 0
+local is_ui_visible = true
 
 ------------------------------------------------------------
 -- PRE-ALLOCATED VECTORS
@@ -133,7 +153,7 @@ local v_pos  = {0, 0}
 local v_size = {0, 0}
 local v_p1   = {0, 0}
 local v_p2   = {0, 0}
-local p_open = {true} 
+local p_open = {true}
 
 ------------------------------------------------------------
 -- LOAD / UNLOAD / SETTINGS
@@ -169,7 +189,7 @@ end)
 ashita.events.register('unload', 'targetbar_unload', function()
     main_data = nil
     sub_data  = nil
-    cast_state.name      = ''
+    cast_state.name        = ''
     cast_state.cast_string = ''
     pcall(settings.save)
 end)
@@ -179,18 +199,16 @@ end)
 ------------------------------------------------------------
 local function GetMenuHelpText()
     if pMenuHelp == 0 then return '' end
-    local offset = ashita.memory.read_uint32(pMenuHelp)
+    local offset = mem_read_uint32(pMenuHelp)
     if offset == 0 then return '' end
-    offset = ashita.memory.read_uint32(offset)
+    offset = mem_read_uint32(offset)
     if offset == 0 then return '' end
-    offset = ashita.memory.read_uint32(offset + 0xEC)
+    offset = mem_read_uint32(offset + 0xEC)
     if offset ~= 0 then
-        local str = ashita.memory.read_string(offset, 256)
+        local str = mem_read_string(offset, 256)
         if str then
             local null_pos = str:find('\x00')
-            if null_pos then
-                return str:sub(1, null_pos - 1)
-            end
+            if null_pos then return str:sub(1, null_pos - 1) end
             return str
         end
     end
@@ -205,9 +223,9 @@ local function refresh_party_cache(now)
     last_scan_time = now
     local party = mm:GetParty()
     if not party then return end
-    
+
     table_clear(party_id_cache)
-    
+
     local sid = party:GetMemberServerId(0)
     self_id_cache  = sid or 0
     self_id_masked = bit_band(self_id_cache, 0xFFFF)
@@ -229,15 +247,14 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
     local sId = entity:GetServerId(tIdx)
     if not sId or sId == 0 then return nil end
 
-    local hp_pct  = entity:GetHPPercent(tIdx)  or 0
-    local spawn   = entity:GetSpawnFlags(tIdx)  or 0
-    local dist_sq = entity:GetDistance(tIdx)    or 0
+    local hp_pct  = entity:GetHPPercent(tIdx) or 0
+    local spawn   = entity:GetSpawnFlags(tIdx) or 0
+    local dist_sq = entity:GetDistance(tIdx)   or 0
 
     local is_pc  = (bit_band(spawn, 0x01) ~= 0)
     local is_npc = (bit_band(spawn, 0x02) ~= 0)
     local is_mob = (bit_band(spawn, 0x10) ~= 0)
 
-    -- name color
     local name_color
     local is_real_npc = false
     if is_pc then
@@ -254,8 +271,8 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         name_color  = COLOR_NPC
         is_real_npc = true
     else
-        local cs = entity:GetClaimStatus(tIdx)
-        local claim_status = (type(cs) == 'number') and bit_band(cs, 0xFFFF) or 0
+        local cs           = entity:GetClaimStatus(tIdx)
+        local claim_status = bit_band(cs or 0, 0xFFFF)
         if claim_status == 0 then
             name_color = COLOR_ENEMY
         elseif claim_status == self_id_masked then
@@ -274,9 +291,7 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
     local is_locked = force_sub_brackets
     if not force_sub_brackets then
         local lf = targ:GetLockedOnFlags()
-        if type(lf) == 'number' then
-            is_locked = (bit_band(lf, 0x01) ~= 0)
-        end
+        is_locked = (lf ~= nil) and (bit_band(lf, 0x01) ~= 0) or false
     end
 
     local cur_name = entity:GetName(tIdx) or '???'
@@ -312,135 +327,151 @@ end
 ------------------------------------------------------------
 -- DRAW: HP BAR
 ------------------------------------------------------------
-local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, force_blue, menu_text)
+local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, force_blue, menu_text, bar_width, show_distance)
     v_pos[1], v_pos[2] = pos_x, pos_y
-    imgui.SetNextWindowPos(v_pos, ImGuiCond_Always)
-    
-    v_size[1], v_size[2] = cfg.bar_width + 16, 0
-    imgui.SetNextWindowSize(v_size, ImGuiCond_Always)
+    igSetNextWindowPos(v_pos, ImGuiCond_Always)
+
+    v_size[1], v_size[2] = bar_width + 16, 0
+    igSetNextWindowSize(v_size, ImGuiCond_Always)
 
     p_open[1] = true
-    if imgui.Begin(win_id, p_open, FLAGS_LOCKED) then
-        local dl = imgui.GetWindowDrawList()
+    if igBegin(win_id, p_open, FLAGS_LOCKED) then
+        local dl = igGetWindowDrawList()
         if dl then
-            local wx, wy = imgui.GetWindowPos()
-            local ww, wh = imgui.GetWindowSize()
+            local wx, wy = igGetWindowPos()
+            local ww, wh = igGetWindowSize()
             v_p1[1], v_p1[2] = wx, wy
             v_p2[1], v_p2[2] = wx + ww, wy + wh
             dl:AddRectFilled(v_p1, v_p2, force_blue and COLOR_PANEL_BLUE or COLOR_PANEL_BG, 4.0)
         end
 
-        imgui.SetCursorPosX(imgui.GetCursorPosX() + PANEL_PADDING)
-        if not is_sub then imgui.SetCursorPosY(imgui.GetCursorPosY() + TOP_PADDING) end
+        igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
+        if not is_sub then igSetCursorPosY(igGetCursorPosY() + TOP_PADDING) end
 
-        if cfg.show_distance and not data.is_self then
-            imgui.TextColored(data.dist_color, data.dist_str)
-            imgui.SameLine()
+        if show_distance and not data.is_self then
+            igTextColored(data.dist_color, data.dist_str)
+            igSameLine()
         end
 
         if not data.is_real_npc then
             if data.dead then
-                imgui.TextColored(COLOR_DEAD_TXT, 'DEAD')
+                igTextColored(COLOR_DEAD_TXT, 'DEAD')
             else
-                imgui.TextColored(COLOR_HP_TXT, data.hp_str)
+                igTextColored(COLOR_HP_TXT, data.hp_str)
             end
-            imgui.SameLine()
+            igSameLine()
         end
 
-        imgui.TextColored(data.name_color, data.display_name)
+        igTextColored(data.name_color, data.display_name)
 
-        -- Renders Menu Text if present
         if force_blue and menu_text and menu_text ~= '' then
-            imgui.SameLine()
-            imgui.TextColored(COLOR_CAST_TXT, menu_text)
+            igSameLine()
+            igTextColored(COLOR_CAST_TXT, menu_text)
         end
 
         if has_spell then
-            imgui.SameLine()
-            imgui.TextColored(
+            igSameLine()
+            igTextColored(
                 cast_state.is_item and COLOR_ITEM_TXT or COLOR_CAST_TXT,
                 cast_state.cast_string)
         end
 
-        imgui.SetCursorPosX(imgui.GetCursorPosX() + PANEL_PADDING)
-        local cx, cy = imgui.GetCursorScreenPos()
-        
-        v_size[1], v_size[2] = cfg.bar_width, bar_h
-        imgui.Dummy(v_size)
+        igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
+        local cx, cy = igGetCursorScreenPos()
+
+        v_size[1], v_size[2] = bar_width, bar_h
+        igDummy(v_size)
 
         if dl then
             v_p1[1], v_p1[2] = cx, cy
-            v_p2[1], v_p2[2] = cx + cfg.bar_width, cy + bar_h
+            v_p2[1], v_p2[2] = cx + bar_width, cy + bar_h
             dl:AddRectFilled(v_p1, v_p2, COLOR_BAR_BG)
             if not data.is_real_npc and data.hp_frac > 0 then
-                v_p2[1] = cx + cfg.bar_width * data.hp_frac
+                v_p2[1] = cx + bar_width * data.hp_frac
                 dl:AddRectFilled(v_p1, v_p2, data.bar_color)
             end
         end
     end
-    imgui.End()
+    igEnd()
 end
 
 ------------------------------------------------------------
 -- DRAW: CAST BAR
 ------------------------------------------------------------
-local function draw_cast_bar(cast_frac, pos_x, pos_y, is_instant)
+local function draw_cast_bar(cast_frac, pos_x, pos_y, is_instant, bar_width)
     v_pos[1], v_pos[2] = pos_x, pos_y
-    imgui.SetNextWindowPos(v_pos, ImGuiCond_Always)
-    
-    v_size[1], v_size[2] = cfg.bar_width + 16, 0
-    imgui.SetNextWindowSize(v_size, ImGuiCond_Always)
+    igSetNextWindowPos(v_pos, ImGuiCond_Always)
+
+    v_size[1], v_size[2] = bar_width + 16, 0
+    igSetNextWindowSize(v_size, ImGuiCond_Always)
 
     p_open[1] = true
-    if imgui.Begin('##targetbar_cast', p_open, FLAGS_LOCKED) then
-        local dl = imgui.GetWindowDrawList()
+    if igBegin('##targetbar_cast', p_open, FLAGS_LOCKED) then
+        local dl = igGetWindowDrawList()
         if dl then
-            local wx, wy = imgui.GetWindowPos()
-            local ww, wh = imgui.GetWindowSize()
+            local wx, wy = igGetWindowPos()
+            local ww, wh = igGetWindowSize()
             v_p1[1], v_p1[2] = wx, wy
             v_p2[1], v_p2[2] = wx + ww, wy + wh
             dl:AddRectFilled(v_p1, v_p2, COLOR_PANEL_BG, 4.0)
         end
 
-        imgui.SetCursorPosX(imgui.GetCursorPosX() + PANEL_PADDING)
-        imgui.SetCursorPosY(imgui.GetCursorPosY() + TOP_PADDING)
+        igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
+        igSetCursorPosY(igGetCursorPosY() + TOP_PADDING)
 
         local nc = cast_state.is_item and COLOR_ITEM_TXT or COLOR_CAST_TXT
-        imgui.TextColored(nc, cast_state.name ~= '' and cast_state.name
+        igTextColored(nc, cast_state.name ~= '' and cast_state.name
                           or (cast_state.is_item and 'Item' or 'Action'))
-        imgui.SameLine()
-        imgui.TextColored(COLOR_ARROW, ' -> ')
-        imgui.SameLine()
-        imgui.TextColored(cast_state.target_color,
+        igSameLine()
+        igTextColored(COLOR_ARROW, ' -> ')
+        igSameLine()
+        igTextColored(cast_state.target_color,
             cast_state.target ~= '' and cast_state.target or 'Self')
 
         if not is_instant then
-            imgui.SameLine()
+            igSameLine()
             local fi = math_floor(cast_frac * 100)
             if cast_state.last_frac_int ~= fi then
                 cast_state.last_frac_int = fi
                 cast_state.frac_str      = str_format(' %d%%', fi)
             end
-            imgui.TextColored(COLOR_HP_TXT, cast_state.frac_str)
+            igTextColored(COLOR_HP_TXT, cast_state.frac_str)
 
-            imgui.SetCursorPosX(imgui.GetCursorPosX() + PANEL_PADDING)
-            local cx, cy = imgui.GetCursorScreenPos()
-            
-            v_size[1], v_size[2] = cfg.bar_width, CAST_BAR_HEIGHT
-            imgui.Dummy(v_size)
+            igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
+            local cx, cy = igGetCursorScreenPos()
+
+            v_size[1], v_size[2] = bar_width, CAST_BAR_HEIGHT
+            igDummy(v_size)
 
             if dl then
                 v_p1[1], v_p1[2] = cx, cy
-                v_p2[1], v_p2[2] = cx + cfg.bar_width, cy + CAST_BAR_HEIGHT
+                v_p2[1], v_p2[2] = cx + bar_width, cy + CAST_BAR_HEIGHT
                 dl:AddRectFilled(v_p1, v_p2, COLOR_BAR_BG)
                 if cast_frac > 0 then
-                    v_p2[1] = cx + cfg.bar_width * cast_frac
+                    v_p2[1] = cx + bar_width * cast_frac
                     dl:AddRectFilled(v_p1, v_p2, cast_state.is_item and COLOR_ITEM_BAR or COLOR_CAST)
                 end
             end
         end
     end
-    imgui.End()
+    igEnd()
+end
+
+------------------------------------------------------------
+-- ITEM NAME LOOKUP
+------------------------------------------------------------
+local function resolve_item_name(data)
+    local slot      = unpack('B', data, 15)
+    local container = unpack('B', data, 17)
+    local inv       = mm:GetInventory()
+    
+    if not inv then return 'Item' end
+    local item = inv:GetContainerItem(container, slot)
+    
+    if not item then return 'Item' end
+    local r = rm:GetItemById(item.Id)
+    
+    return (r and (r.Name[1] or r.Name[0])) or 'Item'
 end
 
 ------------------------------------------------------------
@@ -466,10 +497,13 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
             if r then action_name = r.Name[1] or r.Name[0] end
             is_instant = true
         elseif category == 5 then
-            action_name = 'Item'; is_item = true
+            action_name = 'Item'
+            is_item     = true
         end
     else
-        action_name = 'Item'; is_item = true
+        local ok, name = pcall(resolve_item_name, e.data_modified)
+        action_name = (ok and name) or 'Item'
+        is_item     = true
     end
 
     if action_name == '' or action_name == 'Gil' then return end
@@ -489,9 +523,9 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
         target_name = entity:GetName(target_idx) or 'Unknown'
     end
 
-    cast_state.name          = action_name
-    cast_state.cast_string   = '> ' .. action_name
-    cast_state.target        = target_name
+    cast_state.name         = action_name
+    cast_state.cast_string  = '> ' .. action_name
+    cast_state.target       = target_name
     cast_state.target_color = target_color
     cast_state.target_idx   = target_idx
     cast_state.is_item      = is_item
@@ -505,15 +539,18 @@ end)
 ashita.events.register('d3d_present', 'targetbar_render', function()
     if not is_ui_visible then return end
 
-    local now = os_clock()
+    local now       = os_clock()
+    local px        = cfg.pos_x
+    local py        = cfg.pos_y
+    local bw        = cfg.bar_width
+    local bh        = cfg.bar_height
+    local show_dist = cfg.show_distance
 
     local cast_frac = 0.0
     local cb = mm:GetCastBar()
     if cb then
         local pct = cb:GetPercent()
-        if type(pct) == 'number' then
-            cast_frac = math_max(0.0, math_min(1.0, pct))
-        end
+        if pct then cast_frac = math_max(0.0, math_min(1.0, pct)) end
     end
 
     if cast_frac > 0 then
@@ -529,17 +566,21 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         cast_state.last_tick = now
     end
 
-    local show_instant = cast_frac == 0.0 and cast_state.name ~= ''
+    local cast_name    = cast_state.name
+    local has_cast     = cast_name ~= ''
+    local show_instant = cast_frac == 0.0 and has_cast
                          and (now - cast_state.queued_time) < INSTANT_FLASH
+
     if cast_frac == 0.0 and not show_instant then
-        cast_state.name       = ''
+        cast_state.name        = ''
         cast_state.cast_string = ''
+        has_cast               = false
     end
     local display_frac = show_instant and (cast_state.is_instant and 0.0 or 1.0) or cast_frac
 
     if (display_frac > 0 or show_instant) and cast_state.name ~= '' then
         last_cast_h = CAST_STACK_H
-        draw_cast_bar(display_frac, cfg.pos_x, cfg.pos_y - last_cast_h - CAST_WIN_HEIGHT, cast_state.is_instant)
+        draw_cast_bar(display_frac, px, py - last_cast_h - CAST_WIN_HEIGHT, cast_state.is_instant, bw)
     else
         last_cast_h = 0
     end
@@ -560,39 +601,37 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         last_main_idx     = main_idx
         last_sub_idx      = sub_idx
         refresh_party_cache(now)
+
         main_data = (main_idx ~= 0)
             and parse_target_data(main_idx, main_target_cache, false, entity, targ) or nil
-            
+
         sub_data  = (sub_idx ~= 0)
             and parse_target_data(sub_idx, sub_target_cache, true, entity, targ) or nil
-            
-        -- Logic to capture the Menu Text
+
         if sub_data then
-            local raw_text = GetMenuHelpText()
-            if raw_text ~= '' then
-                last_menu_text = '(' .. raw_text .. ')'
-            else
-                last_menu_text = ''
+            if sub_idx ~= last_sub_idx_for_menu then
+                last_sub_idx_for_menu = sub_idx
+                local raw_text = GetMenuHelpText()
+                last_menu_text = raw_text ~= '' and ('(' .. raw_text .. ')') or ''
             end
         else
-            last_menu_text = ''
+            last_sub_idx_for_menu = -1
+            last_menu_text        = ''
         end
     end
 
     if main_data then
-        draw_bar(main_data, '##targetbar_main', cfg.pos_x, cfg.pos_y,
-            cfg.bar_height, false,
-            cast_state.name ~= '' and cast_state.target_idx == main_idx,
-            sub_data ~= nil,
-            last_menu_text)
+        draw_bar(main_data, '##targetbar_main', px, py,
+            bh, false,
+            has_cast and cast_state.target_idx == main_idx,
+            sub_data ~= nil, last_menu_text, bw, show_dist)
     end
     if sub_data then
-        draw_bar(sub_data, '##targetbar_sub', cfg.pos_x,
-            cfg.pos_y - cfg.bar_height - SUB_BAR_OFFSET,
-            math_max(2, math_floor(cfg.bar_height / 2)), true,
-            cast_state.name ~= '' and cast_state.target_idx == sub_idx,
-            false,
-            '')
+        draw_bar(sub_data, '##targetbar_sub', px,
+            py - bh - SUB_BAR_OFFSET,
+            math_max(2, math_floor(bh * 0.5)), true,
+            has_cast and cast_state.target_idx == sub_idx,
+            false, '', bw, show_dist)
     end
 end)
 
@@ -603,7 +642,7 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
     local args = e.command:args()
     if #args == 0 then return end
     local cmd = args[1]:lower()
-    if cmd ~= '/targetbar' and cmd ~= '/tbar' then return end
+    if cmd ~= '/targetbar' then return end
     e.blocked = true
 
     local sub = args[2] and args[2]:lower() or 'toggle'

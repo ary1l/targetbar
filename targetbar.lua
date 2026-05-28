@@ -667,6 +667,6 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
             print('[targetbar] ' .. sub .. ': ' .. val)
         end
     elseif sub == 'help' then
-        print('[targetbar] /tbar toggle|show|hide|dist|width <n>|height <n>|x <n>|y <n>')
+        print('[targetbar] /targetbar toggle|show|hide|dist|width <n>|height <n>|x <n>|y <n>')
     end
 end)

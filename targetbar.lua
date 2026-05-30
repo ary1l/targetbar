@@ -618,7 +618,6 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local bh        = cfg.bar_height
     local show_dist = cfg.show_distance
 
-    -- Instant cast garbage collection
     if pending_instant_cast and (now - pending_instant_cast.queued_time) > 2.0 then
         pending_instant_cast = nil
     end
@@ -627,7 +626,6 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local cb = mm:GetCastBar()
     if cb then
         local pct = cb:GetPercent()
-        -- FIX: Only trust the cast bar percent if we actually know we are casting
         if pct and (pct < 0.99 or cast_state.name ~= '') then
             cast_frac = math_max(0.0, math_min(1.0, pct))
         end
@@ -642,9 +640,8 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     end
 
     -- FORCE CLEAR STUCK BAR:
-    -- If no progress for 2.5 seconds, force kill the cast state
     if cast_state.name ~= '' and not cast_state.is_instant then
-        if (now - cast_state.last_progress_time) > 2.5 then
+        if (now - cast_state.last_progress_time) > 1.0 then
             cast_state.name = ''
             cast_state.last_pct = 0
             cast_state.last_progress_time = 0

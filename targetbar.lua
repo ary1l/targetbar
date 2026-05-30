@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '1.1'
+addon.version = '0.9'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -56,7 +56,7 @@ local FLAGS_LOCKED = bit_bor(
     ImGuiWindowFlags_NoDecoration, ImGuiWindowFlags_AlwaysAutoResize,
     ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags_NoNav,
     ImGuiWindowFlags_NoBackground, ImGuiWindowFlags_NoMove,
-    ImGuiWindowFlags_NoMouseInputs)
+    ImGuiWindowFlags_NoMouseInputs, ImGuiWindowFlags_NoSavedSettings)
 
 ------------------------------------------------------------
 -- CONFIG & CONSTANTS
@@ -126,7 +126,12 @@ local cast_state = {
     last_progress_time=0,
     frac_str=' 0%', last_frac_int=-1,
 }
-local pending_instant_cast = nil
+
+local pending_instant_cast = {
+    active = false, name = '', cast_string = '', target = '',
+    target_color = {1,1,1,1}, target_idx = 0, is_item = false,
+    is_instant = false, queued_time = 0
+}
 
 local main_target_cache   = {}
 local sub_target_cache    = {}
@@ -192,7 +197,7 @@ ashita.events.register('unload', 'targetbar_unload', function()
     sub_data  = nil
     cast_state.name       = ''
     cast_state.cast_string = ''
-    pending_instant_cast   = nil
+    pending_instant_cast.active = false
     pcall(settings.save)
 end)
 
@@ -483,12 +488,13 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
 
     local entity     = mm:GetEntity()
-    local player     = mm:GetPlayer()
+    local party      = mm:GetParty()
     local target_idx = unpack('H', e.data_modified, 0x09)
     local action_id  = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0D) or 0
     local category   = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0B) or 0
 
     local action_name, is_item, is_instant = '', false, false
+    local now = os_clock() -- 
 
     -- IDENTIFY ACTION
     if e.id == 0x1A then
@@ -505,8 +511,8 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
             if r then action_name = r.Name[1] or r.Name[0] end
             is_instant = true
             
-            -- Validation: TP Check
-            local current_tp = player:GetTP() or 0
+            -- Validation: TP
+            local current_tp = party and party:GetMemberTP(0) or 0
             if current_tp < 1000 then return end
 
         elseif category == 7 or category == 9 or category == 14 then
@@ -543,7 +549,7 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     -- HARD RESET & UPDATE STATE
     -- Only clear the old state if the new action is valid and proceeding
     cast_state.last_pct = 0
-    cast_state.last_progress_time = os_clock()
+    cast_state.last_progress_time = now
 
     local target_name  = 'Self'
     local target_color = COLOR_PC_SELF
@@ -561,16 +567,15 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     end
 
     if is_instant then
-        pending_instant_cast = {
-            name         = action_name,
-            cast_string  = '> ' .. action_name,
-            target       = target_name,
-            target_color = target_color,
-            target_idx   = target_idx,
-            is_item      = is_item,
-            is_instant   = is_instant,
-            queued_time  = os_clock()
-        }
+        pending_instant_cast.active       = true
+        pending_instant_cast.name         = action_name
+        pending_instant_cast.cast_string  = '> ' .. action_name
+        pending_instant_cast.target       = target_name
+        pending_instant_cast.target_color = target_color
+        pending_instant_cast.target_idx   = target_idx
+        pending_instant_cast.is_item      = is_item
+        pending_instant_cast.is_instant   = is_instant
+        pending_instant_cast.queued_time  = now
     else
         cast_state.name         = action_name
         cast_state.cast_string  = '> ' .. action_name
@@ -579,17 +584,17 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
         cast_state.target_idx   = target_idx
         cast_state.is_item      = is_item
         cast_state.is_instant   = is_instant
-        cast_state.queued_time  = os_clock()
-        cast_state.last_progress_time = os_clock()
+        cast_state.queued_time  = now
     end
 end)
 ------------------------------------------------------------
 -- PACKET IN (Server Confirmation)
 ------------------------------------------------------------
 ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
-    if e.id == 0x28 and pending_instant_cast then
+    if e.id == 0x28 and pending_instant_cast.active then
         local actor_id = unpack('I', e.data, 0x05)
         if actor_id == self_id_cache then
+            local now = os_clock()
             cast_state.name         = pending_instant_cast.name
             cast_state.cast_string  = pending_instant_cast.cast_string
             cast_state.target       = pending_instant_cast.target
@@ -597,10 +602,10 @@ ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
             cast_state.target_idx   = pending_instant_cast.target_idx
             cast_state.is_item      = pending_instant_cast.is_item
             cast_state.is_instant   = pending_instant_cast.is_instant
-            cast_state.queued_time  = os_clock()
-            cast_state.last_progress_time = os_clock()
+            cast_state.queued_time  = now
+            cast_state.last_progress_time = now
             
-            pending_instant_cast = nil
+            pending_instant_cast.active = false
         end
     end
 end)
@@ -618,8 +623,8 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local bh        = cfg.bar_height
     local show_dist = cfg.show_distance
 
-    if pending_instant_cast and (now - pending_instant_cast.queued_time) > 2.0 then
-        pending_instant_cast = nil
+    if pending_instant_cast.active and (now - pending_instant_cast.queued_time) > 2.0 then
+        pending_instant_cast.active = false
     end
 
     local cast_frac = 0.0

@@ -252,7 +252,7 @@ end
 local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, targ)
     if not tIdx or tIdx == 0 then return nil end
     local sId = entity:GetServerId(tIdx)
-    if not sId or sId == 0 then return nil end
+    if (not sId or sId == 0) and tIdx ~= 0 then return nil end
 
     local hp_pct  = entity:GetHPPercent(tIdx) or 0
     local spawn   = entity:GetSpawnFlags(tIdx) or 0

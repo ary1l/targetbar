@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '1.0'
+addon.version = '1.1'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -14,7 +14,6 @@ local rm = AshitaCore:GetResourceManager()
 
 local pMenuHelp = ashita.memory.find(0, 0, '5350E8????????5F885D??5E5D5BC3A1????????85C0????538BCDE8', 16, 0)
 
--- API Localizations (Micro-Optimization)
 local mem_read_uint32      = ashita.memory.read_uint32
 local mem_read_string      = ashita.memory.read_string
 
@@ -82,8 +81,8 @@ local SUB_BAR_OFFSET  = 30
 ------------------------------------------------------------
 -- COLORS
 ------------------------------------------------------------
-local COLOR_PANEL_BG   = imgui.GetColorU32({0.05, 0.05, 0.05, 0.45})
-local COLOR_PANEL_BLUE = imgui.GetColorU32({0.05, 0.05, 0.35, 0.35})
+local COLOR_PANEL_BG   = imgui.GetColorU32({0.05, 0.05, 0.05, 0.55})
+local COLOR_PANEL_BLUE = imgui.GetColorU32({0.05, 0.05, 0.35, 0.45})
 local COLOR_BAR_BG     = imgui.GetColorU32({0.18, 0.18, 0.18, 0.0})
 local COLOR_BAR_DEAD   = imgui.GetColorU32({0.59, 0.12, 0.12, 1.0})
 local COLOR_CAST       = imgui.GetColorU32({0.20, 0.75, 0.20, 1.0})
@@ -124,22 +123,24 @@ local cast_state = {
     name='', cast_string='', target='', target_color={1,1,1,1},
     target_idx=0, is_item=false, is_instant=false,
     last_pct=0, last_tick=0, queued_time=0,
+    last_progress_time=0,
     frac_str=' 0%', last_frac_int=-1,
 }
+local pending_instant_cast = nil
 
 local main_target_cache   = {}
 local sub_target_cache    = {}
 local packet_target_cache = {}
 local party_id_cache      = {}
 
-local last_logic_update     = 0
-local last_main_idx         = 0
-local last_sub_idx          = 0
+local last_logic_update   = 0
+local last_main_idx       = 0
+local last_sub_idx        = 0
 local last_sub_idx_for_menu = -1
-local last_scan_time        = 0
-local self_id_cache         = 0
-local self_id_masked        = 0
-local last_menu_text        = ''
+local last_scan_time      = 0
+local self_id_cache       = 0
+local self_id_masked      = 0
+local last_menu_text      = ''
 
 local main_data     = nil
 local sub_data      = nil
@@ -189,8 +190,9 @@ end)
 ashita.events.register('unload', 'targetbar_unload', function()
     main_data = nil
     sub_data  = nil
-    cast_state.name        = ''
+    cast_state.name       = ''
     cast_state.cast_string = ''
+    pending_instant_cast   = nil
     pcall(settings.save)
 end)
 
@@ -271,7 +273,7 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         name_color  = COLOR_NPC
         is_real_npc = true
     else
-        local cs           = entity:GetClaimStatus(tIdx)
+        local cs             = entity:GetClaimStatus(tIdx)
         local claim_status = bit_band(cs or 0, 0xFFFF)
         if claim_status == 0 then
             name_color = COLOR_ENEMY
@@ -481,32 +483,67 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
 
     local entity     = mm:GetEntity()
+    local player     = mm:GetPlayer()
     local target_idx = unpack('H', e.data_modified, 0x09)
     local action_id  = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0D) or 0
     local category   = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0B) or 0
 
     local action_name, is_item, is_instant = '', false, false
 
+    -- IDENTIFY ACTION
     if e.id == 0x1A then
-        if category == 3 then
+        if category == 3 then -- Spell
             local r = rm:GetSpellById(action_id)
             if r then action_name = r.Name[1] or r.Name[0] end
+            
+            -- Validation: Distance Check
+            local dist_sq = entity:GetDistance(target_idx) or 0
+            if dist_sq > 462 then return end 
+
+        elseif category == 2 then -- WS
+            local r = rm:GetAbilityById(action_id)
+            if r then action_name = r.Name[1] or r.Name[0] end
+            is_instant = true
+            
+            -- Validation: TP Check
+            local current_tp = player:GetTP() or 0
+            if current_tp < 1000 then return end
+
         elseif category == 7 or category == 9 or category == 14 then
-            local r = rm:GetAbilityById(
-                (category == 7) and action_id or (action_id + 512))
+            local r = rm:GetAbilityById((category == 7) and action_id or (action_id + 512))
             if r then action_name = r.Name[1] or r.Name[0] end
             is_instant = true
         elseif category == 5 then
             action_name = 'Item'
             is_item     = true
+            is_instant  = true
         end
     else
         local ok, name = pcall(resolve_item_name, e.data_modified)
         action_name = (ok and name) or 'Item'
         is_item     = true
+        is_instant  = true
     end
 
     if action_name == '' or action_name == 'Gil' then return end
+
+    -- ---------------------------------------------------------
+    -- If the memory cast bar is currently visible and progressing,
+    -- ignore new action packets (the server will reject them anyway).
+    -- ---------------------------------------------------------
+    local cb = mm:GetCastBar()
+    if cb then
+        local pct = cb:GetPercent()
+        -- pct > 0 and < 0.98 ensures we are in the middle of a cast.
+        if pct and pct > 0 and pct < 0.98 then
+            return
+        end
+    end
+
+    -- HARD RESET & UPDATE STATE
+    -- Only clear the old state if the new action is valid and proceeding
+    cast_state.last_pct = 0
+    cast_state.last_progress_time = os_clock()
 
     local target_name  = 'Self'
     local target_color = COLOR_PC_SELF
@@ -523,14 +560,49 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
         target_name = entity:GetName(target_idx) or 'Unknown'
     end
 
-    cast_state.name         = action_name
-    cast_state.cast_string  = '> ' .. action_name
-    cast_state.target       = target_name
-    cast_state.target_color = target_color
-    cast_state.target_idx   = target_idx
-    cast_state.is_item      = is_item
-    cast_state.is_instant   = is_instant
-    cast_state.queued_time  = os_clock()
+    if is_instant then
+        pending_instant_cast = {
+            name         = action_name,
+            cast_string  = '> ' .. action_name,
+            target       = target_name,
+            target_color = target_color,
+            target_idx   = target_idx,
+            is_item      = is_item,
+            is_instant   = is_instant,
+            queued_time  = os_clock()
+        }
+    else
+        cast_state.name         = action_name
+        cast_state.cast_string  = '> ' .. action_name
+        cast_state.target       = target_name
+        cast_state.target_color = target_color
+        cast_state.target_idx   = target_idx
+        cast_state.is_item      = is_item
+        cast_state.is_instant   = is_instant
+        cast_state.queued_time  = os_clock()
+        cast_state.last_progress_time = os_clock()
+    end
+end)
+------------------------------------------------------------
+-- PACKET IN (Server Confirmation)
+------------------------------------------------------------
+ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
+    if e.id == 0x28 and pending_instant_cast then
+        local actor_id = unpack('I', e.data, 0x05)
+        if actor_id == self_id_cache then
+            cast_state.name         = pending_instant_cast.name
+            cast_state.cast_string  = pending_instant_cast.cast_string
+            cast_state.target       = pending_instant_cast.target
+            cast_state.target_color = pending_instant_cast.target_color
+            cast_state.target_idx   = pending_instant_cast.target_idx
+            cast_state.is_item      = pending_instant_cast.is_item
+            cast_state.is_instant   = pending_instant_cast.is_instant
+            cast_state.queued_time  = os_clock()
+            cast_state.last_progress_time = os_clock()
+            
+            pending_instant_cast = nil
+        end
+    end
 end)
 
 ------------------------------------------------------------
@@ -546,41 +618,88 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local bh        = cfg.bar_height
     local show_dist = cfg.show_distance
 
+    -- Instant cast garbage collection
+    if pending_instant_cast and (now - pending_instant_cast.queued_time) > 2.0 then
+        pending_instant_cast = nil
+    end
+
     local cast_frac = 0.0
     local cb = mm:GetCastBar()
     if cb then
         local pct = cb:GetPercent()
-        if pct then cast_frac = math_max(0.0, math_min(1.0, pct)) end
+        -- FIX: Only trust the cast bar percent if we actually know we are casting
+        if pct and (pct < 0.99 or cast_state.name ~= '') then
+            cast_frac = math_max(0.0, math_min(1.0, pct))
+        end
     end
+
+    -- STAGNATION WATCHDOG: 
+    -- If cast is active, check if progress is being made.
+    if cast_state.name ~= '' and cast_frac > 0 then
+        if math_abs(cast_frac - cast_state.last_pct) > 0.001 then
+            cast_state.last_progress_time = now
+        end
+    end
+
+    -- FORCE CLEAR STUCK BAR:
+    -- If no progress for 2.5 seconds, force kill the cast state
+    if cast_state.name ~= '' and not cast_state.is_instant then
+        if (now - cast_state.last_progress_time) > 2.5 then
+            cast_state.name = ''
+            cast_state.last_pct = 0
+            cast_state.last_progress_time = 0
+        end
+    end
+
+    local draw_cast = false
+    local draw_frac = 0.0
 
     if cast_frac > 0 then
-        if cast_frac ~= cast_state.last_pct then
-            cast_state.last_pct  = cast_frac
-            cast_state.last_tick = now
+        -- Casting actively progressing
+        cast_state.last_pct  = cast_frac
+        cast_state.last_tick = now
+        draw_cast = true
+        draw_frac = cast_frac
+    elseif cast_state.last_pct > 0 then
+        -- Check if it was a successful completion (>= 95%) or an interrupt
+        local is_complete = cast_state.last_pct >= 0.95
+        local timeout = is_complete and 0.5 or 0.0
+        
+        if (now - cast_state.last_tick) < timeout then
+            draw_cast = true
+            draw_frac = cast_state.last_pct
         else
-            local timeout = (cast_frac >= 0.99) and 0.2 or 0.75
-            if (now - cast_state.last_tick) > timeout then cast_frac = 0.0 end
+            cast_state.name     = ''
+            cast_state.last_pct = 0
         end
     else
-        cast_state.last_pct  = 0
-        cast_state.last_tick = now
+        -- Not casting, last_pct is 0. 
+        if cast_state.name ~= '' then
+            if cast_state.is_instant then
+                -- Instant action flash
+                if (now - cast_state.queued_time) < INSTANT_FLASH then
+                    draw_cast = true
+                    draw_frac = 0.0
+                else
+                    cast_state.name = ''
+                end
+            else
+                -- Waiting for spell to start. Give it 1.0s ping allowance.
+                if (now - cast_state.queued_time) > 1.0 then
+                    cast_state.name = ''
+                end
+            end
+        end
     end
 
-    local cast_name    = cast_state.name
-    local has_cast     = cast_name ~= ''
-    local show_instant = cast_frac == 0.0 and has_cast
-                         and (now - cast_state.queued_time) < INSTANT_FLASH
-
-    if cast_frac == 0.0 and not show_instant then
-        cast_state.name        = ''
+    if cast_state.name == '' then
         cast_state.cast_string = ''
-        has_cast               = false
     end
-    local display_frac = show_instant and (cast_state.is_instant and 0.0 or 1.0) or cast_frac
 
-    if (display_frac > 0 or show_instant) and cast_state.name ~= '' then
+    if draw_cast and cast_state.name ~= '' then
         last_cast_h = CAST_STACK_H
-        draw_cast_bar(display_frac, px, py - last_cast_h - CAST_WIN_HEIGHT, cast_state.is_instant, bw)
+        local cast_base = (sub_data ~= nil) and (py - bh - SUB_BAR_OFFSET) or py
+        draw_cast_bar(draw_frac, px, cast_base - last_cast_h - CAST_WIN_HEIGHT, cast_state.is_instant, bw)
     else
         last_cast_h = 0
     end
@@ -592,7 +711,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local main_idx = targ:GetTargetIndex(0)
     local sub_raw  = targ:GetIsSubTargetActive()
     local sub_idx  = (sub_raw ~= nil and sub_raw ~= 0 and sub_raw ~= false)
-                      and targ:GetTargetIndex(1) or 0
+                        and targ:GetTargetIndex(1) or 0
 
     if (now - last_logic_update > UPDATE_INTERVAL)
     or (main_idx ~= last_main_idx)
@@ -623,14 +742,14 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     if main_data then
         draw_bar(main_data, '##targetbar_main', px, py,
             bh, false,
-            has_cast and cast_state.target_idx == main_idx,
+            draw_cast and cast_state.target_idx == main_idx,
             sub_data ~= nil, last_menu_text, bw, show_dist)
     end
     if sub_data then
         draw_bar(sub_data, '##targetbar_sub', px,
             py - bh - SUB_BAR_OFFSET,
             math_max(2, math_floor(bh * 0.5)), true,
-            has_cast and cast_state.target_idx == sub_idx,
+            draw_cast and cast_state.target_idx == sub_idx,
             false, '', bw, show_dist)
     end
 end)

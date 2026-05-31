@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '.9a'
+addon.version = '.9'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -75,14 +75,12 @@ local default_cfg = {
 local cfg = default_cfg
 
 local CAST_BAR_HEIGHT = 8
-local INSTANT_FLASH   = 1.5
 local UPDATE_INTERVAL = 0.15
 local SCAN_INTERVAL   = 1.0
+local FINISH_DELAY    = 1.5
 
 local PANEL_PADDING   = 4
 local TOP_PADDING     = 2
-local CAST_WIN_HEIGHT = 22
-local CAST_STACK_H    = 25
 local SUB_BAR_OFFSET  = 30
 
 ------------------------------------------------------------
@@ -124,24 +122,14 @@ local HP_COLOR_LUT    = {}
 local PERCENT_STR_LUT = {}
 for i = 0, 100 do PERCENT_STR_LUT[i] = tostring(i) .. '%' end
 
--- Exclusions for menu text to ensure only relevant spell/JA/WS names appear
-local EXCLUDED_MENU_TEXT = {
-    ['Commands']   = true,
-    ['Magic List'] = true,
-    ['Abilities']  = true,
-    ['Items']      = true,
-	['Trade']	   = true,
-	['Conquest']   = true,
-	['Chat']	   = true,
-	['Status']	   = true,
-	['Equipment']  = true,
-	['Synthesis']  = true,
-	['Party'] 	   = true,
-	['Search']	   = true,
-	['Linkshell']  = true,
-	['Region Info'] = true,
-	['Map']		   = true,
-	['Log Window'] = true,
+local EXCLUDED_KEYWORDS = {
+    'commands', 'magic list', 'abilities', 'items', 'trade', 'conquest',
+    'chat', 'status', 'equipment', 'synthesis', 'party', 'search',
+    'linkshell', 'region info', 'map', 'log window', 'besieged',
+    'campaign', 'colonization', 'wide scan', 'communication', 'treasure pool',
+    'log out', 'shut down', 'friend list', 'emote list', 'current time',
+    'help desk', 'config', 'markers', 'macropalette', 'set bazaar', 
+    'view house', 'key items', 'quests', 'missions'
 }
 
 ------------------------------------------------------------
@@ -149,12 +137,14 @@ local EXCLUDED_MENU_TEXT = {
 ------------------------------------------------------------
 local cast_state = {
     name='', cast_string='', target='', target_color={1,1,1,1},
-    target_idx=0, is_item=false, is_instant=false,
-    last_pct=0, last_tick=0, queued_time=0,
-    frac_str=' 0%', last_frac_int=-1,
+    target_idx=0, is_item=false,
+    last_frac_int=-1,
     display_target='Self', bar_color_txt=COLOR_CAST_TXT,
+    start_time=0,
+    started=false
 }
 
+local cast_finished_time = 0
 local sub_target_persistence = 0
 local sub_target_expires     = 0
 
@@ -235,8 +225,7 @@ end)
 ashita.events.register('unload', 'targetbar_unload', function()
     main_data = nil
     sub_data  = nil
-    cast_state.name        = ''
-    cast_state.cast_string = ''
+    cast_state.name      = ''
     pcall(settings.save)
 end)
 
@@ -325,7 +314,7 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         name_color  = COLOR_NPC
         is_real_npc = true
     else
-        local cs       = entity:GetClaimStatus(tIdx)
+        local cs     = entity:GetClaimStatus(tIdx)
         local claim_status = bit_band(cs or 0, 0xFFFF)
         if claim_status == 0 then
             name_color = COLOR_ENEMY
@@ -359,16 +348,16 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
                             or HP_COLOR_LUT[math_max(0, math_min(100, hp_pct))]
     end
 
-	if not out_cache.last_dist_sq
+    if not out_cache.last_dist_sq
     or math_abs(out_cache.last_dist_sq - dist_sq) > math_max(1.0, out_cache.last_dist_sq * 0.02) then
         out_cache.last_dist_sq = dist_sq
         out_cache.dist_str     = str_format('%.1f', math_sqrt(dist_sq))
 
         -- Logic: 0-21.9 (Green), 22.0-29.9 (Blue), 30.0-50.0 (Red), 50.1+ (White)
         out_cache.dist_color   = (dist_sq <= 480.0) and COLOR_DIST_NEAR
-                                or (dist_sq <= 900.0) and COLOR_DIST_MID
-                                or (dist_sq <= 2500.0) and COLOR_DIST_RED
-                                or COLOR_DIST_FAR
+                               or (dist_sq <= 900.0) and COLOR_DIST_MID
+                               or (dist_sq <= 2500.0) and COLOR_DIST_RED
+                               or COLOR_DIST_FAR
     end
 
     out_cache.name_color  = name_color
@@ -454,7 +443,7 @@ end
 ------------------------------------------------------------
 -- DRAW: CAST BAR
 ------------------------------------------------------------
-local function draw_cast_bar(cast_frac, pos_x, pos_y, is_instant, bar_width)
+local function draw_cast_bar(cast_frac, pos_x, pos_y, bar_width)
     v_pos[1], v_pos[2] = pos_x, pos_y
     igSetNextWindowPos(v_pos, igCond_Always)
 
@@ -483,29 +472,29 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y, is_instant, bar_width)
         igSameLine()
         igTextColored(cast_state.target_color, cast_state.display_target)
 
-        if not is_instant then
+        -- Progress bar logic
+        if cast_frac > 0 then
             igSameLine()
             local fi = math_floor(cast_frac * 100)
             if cast_state.last_frac_int ~= fi then
                 cast_state.last_frac_int = fi
-                cast_state.frac_str      = str_format(' %d%%', fi)
             end
-            igTextColored(COLOR_HP_TXT, cast_state.frac_str)
+            igTextColored(COLOR_HP_TXT, str_format(' %d%%', fi))
+        end
 
-            igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
-            local cx, cy = igGetCursorScreenPos()
+        igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
+        local cx, cy = igGetCursorScreenPos()
 
-            v_size[1], v_size[2] = bar_width, CAST_BAR_HEIGHT
-            igDummy(v_size)
+        v_size[1], v_size[2] = bar_width, CAST_BAR_HEIGHT
+        igDummy(v_size)
 
-            if dl then
-                v_p1[1], v_p1[2] = cx, cy
-                v_p2[1], v_p2[2] = cx + bar_width, cy + CAST_BAR_HEIGHT
-                dl:AddRectFilled(v_p1, v_p2, COLOR_BAR_BG)
-                if cast_frac > 0 then
-                    v_p2[1] = cx + bar_width * cast_frac
-                    dl:AddRectFilled(v_p1, v_p2, cast_state.is_item and COLOR_ITEM_BAR or COLOR_CAST)
-                end
+        if dl then
+            v_p1[1], v_p1[2] = cx, cy
+            v_p2[1], v_p2[2] = cx + bar_width, cy + CAST_BAR_HEIGHT
+            dl:AddRectFilled(v_p1, v_p2, COLOR_BAR_BG)
+            if cast_frac > 0 then
+                v_p2[1] = cx + bar_width * cast_frac
+                dl:AddRectFilled(v_p1, v_p2, cast_state.is_item and COLOR_ITEM_BAR or COLOR_CAST)
             end
         end
     end
@@ -535,12 +524,12 @@ end
 ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
 
-    local entity     = cached_entity
+    local entity = cached_entity
     local target_idx = unpack('H', e.data_modified, 0x09)
-    local action_id  = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0D) or 0
-    local category   = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0B) or 0
+    local category    = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0B) or 0
+    local action_id   = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0D) or 0
 
-    local action_name, is_item, is_instant = '', false, false
+    local action_name, is_item = '', false
 
     if e.id == 0x1A then
         if category == 7 or category == 9 or category == 13 or category == 14 then
@@ -567,7 +556,7 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
 
     if action_name == '' or action_name == 'Gil' then return end
 
-    local target_name  = 'Self'
+    local target_name   = 'Self'
     local target_color = COLOR_PC_SELF
 
     if not is_item then
@@ -581,6 +570,10 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     elseif target_idx ~= 0 and entity then
         target_name = entity:GetName(target_idx) or 'Unknown'
     end
+    if action_name ~= cast_state.name or cast_state.started then
+        cast_state.start_time = os.clock()
+        cast_state.started    = false
+    end
 
     cast_state.name            = action_name
     cast_state.cast_string     = '> ' .. action_name
@@ -588,10 +581,9 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     cast_state.target_color    = target_color
     cast_state.target_idx      = target_idx
     cast_state.is_item         = is_item
-    cast_state.is_instant      = is_instant
-    cast_state.queued_time     = os_clock()
     cast_state.display_target  = (target_name ~= '') and target_name or 'Self'
-    cast_state.bar_color_txt   = is_item and COLOR_ITEM_TXT or COLOR_CAST_TXT
+    cast_state.bar_color_txt   = is_item or (is_item and COLOR_ITEM_TXT) or COLOR_CAST_TXT
+    cast_finished_time         = 0
 end)
 
 ------------------------------------------------------------
@@ -607,40 +599,30 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local bh        = cfg.bar_height
     local show_dist = cfg.show_distance
 
-    local cast_frac = 0.0
-    local cb = cached_cb
-    if cb then
-        local pct = cb:GetPercent()
-        if pct then cast_frac = math_max(0.0, math_min(1.0, pct)) end
-    end
+    local cb        = cached_cb
+    local cast_frac = (cb and cb:GetPercent()) or 0
 
     if cast_frac > 0 then
-        if cast_frac ~= cast_state.last_pct then
-            cast_state.last_pct  = cast_frac
-            cast_state.last_tick = now
-        else
-            local timeout = (cast_frac >= 0.99) and 0.2 or 0.75
-            if (now - cast_state.last_tick) > timeout then cast_frac = 0.0 end
-        end
-    else
-        cast_state.last_pct  = 0
-        cast_state.last_tick = now
+        cast_state.started = true
     end
 
-    local cast_name    = cast_state.name
-    local has_cast     = cast_name ~= ''
-    local show_instant = cast_frac == 0.0 and has_cast
-                         and (now - cast_state.queued_time) < INSTANT_FLASH
-    if cast_frac <= 0.0 and not show_instant then
-        if has_cast then
-            cast_state.name        = ''
-            cast_state.cast_string = ''
-            cast_state.target_idx  = 0
-            has_cast               = false
+    if cast_state.name ~= '' then
+        if not cast_state.started and (now - cast_state.start_time > 0.5) then
+            cast_state.name = ''
+            cast_state.started = false
+            cast_finished_time = 0
+        elseif cast_frac >= 1.0 then
+            if cast_finished_time == 0 then cast_finished_time = now end
+        elseif cast_frac > 0 and cast_frac < 1.0 then
+            cast_finished_time = 0
+        elseif cast_finished_time > 0 and (now - cast_finished_time >= FINISH_DELAY) then
+            cast_state.name = ''
+            cast_state.started = false
+            cast_finished_time = 0
         end
     end
 
-    local display_frac = show_instant and (cast_state.is_instant and 0.0 or 1.0) or cast_frac
+    local has_cast = cast_state.name ~= ''
     local targ   = cached_targ
     local entity = cached_entity
 
@@ -671,7 +653,17 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
             refresh_party_cache(now)
 
             local raw_text = GetMenuHelpText()
-            if EXCLUDED_MENU_TEXT[raw_text] then
+            local lower_text = str_lower(raw_text)
+            local is_excluded = false
+
+            for _, keyword in pairs(EXCLUDED_KEYWORDS) do
+                if str_find(lower_text, keyword) then
+                    is_excluded = true
+                    break
+                end
+            end
+
+            if is_excluded then
                 last_menu_text = ''
             else
                 last_menu_text = (raw_text ~= '' and raw_text ~= nil) and ('(' .. raw_text .. ')') or ''
@@ -685,7 +677,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         end
     else
         main_data = nil
-        sub_data  = nil
+        sub_data = nil
     end
 
     local current_y = py
@@ -708,9 +700,9 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         current_y = current_y - rcache.sub_bh - SUB_BAR_OFFSET - 10
     end
 
-    if (display_frac > 0 or show_instant) and has_cast then
+    if (cast_frac > 0 and cast_frac < 1.0) and has_cast then
         local cast_y = current_y
-        draw_cast_bar(display_frac, px, cast_y, cast_state.is_instant, bw)
+        draw_cast_bar(cast_frac, px, cast_y, bw)
     end
 end)
 

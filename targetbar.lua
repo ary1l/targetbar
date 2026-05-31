@@ -136,11 +136,11 @@ end
 local EXCLUDED_KEYWORDS = {
     'commands', 'magic list', 'abilities', 'items', 'trade', 'conquest',
     'chat', 'status', 'equipment', 'synthesis', 'party', 'search',
-    'linkshell', 'region info', 'map', 'log window', 'besieged',
-    'campaign', 'colonization', 'wide scan', 'communication', 'treasure pool',
-    'log out', 'shut down', 'friend list', 'emote list', 'current time',
-    'help desk', 'config', 'markers', 'macropalette', 'set bazaar',
-    'view house', 'key items', 'quests', 'missions', 'k.O',
+    'linkshell', 'region', 'info', 'map', 'log', 'window', 'besieged',
+    'campaign', 'colonization', 'wide', 'scan', 'communication', 'treasure', 'pool',	
+    'out', 'shut down', 'friend', 'list', 'emote', 'current', 'time',
+    'help', 'desk', 'config', 'markers', 'macropalette', 'set', 'bazaar',
+    'view', 'house', 'key', 'items', 'quests', 'missions', 'k.O',
 }
 
 ------------------------------------------------------------
@@ -316,14 +316,8 @@ end
 ------------------------------------------------------------
 local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, targ)
     if not tIdx or tIdx == 0 then return nil end
-    
-    -- Attempt to get the name first so we have something to display
     local cur_name = entity:GetName(tIdx) or 'Unknown'
-    
-    -- Check for ServerID, but do not return nil if it is missing
     local sId = entity:GetServerId(tIdx) or 0
-    
-    -- If we have no ServerID and the name is 'Unknown', it might be invalid
     if sId == 0 and cur_name == 'Unknown' then return nil end
 
     local hp_pct  = entity:GetHPPercent(tIdx) or 0
@@ -581,8 +575,7 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     local target_idx = unpack('H', e.data_modified, 0x09)
     local category = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0B) or 0
     local action_id = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0D) or 0
-    
-    -- Get a fresh entity manager here
+
     local entity_mgr = mm:GetEntity()
     
     local action_name, is_item = '', false
@@ -603,15 +596,11 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
 
     local target_name  = 'Self'
     local target_color = COLOR_PC_SELF
-    
-    -- Only attempt to parse if index is not 0 (Self)
+
     if target_idx ~= 0 and entity_mgr then
-        -- Retrieve the name directly
         local name = entity_mgr:GetName(target_idx)
         if name and name ~= '' then
             target_name = name
-            
-            -- We can parse the specific target data for colors
             local tdata = parse_target_data(target_idx, packet_target_cache, false, entity_mgr, cached_targ)
             if tdata then
                 target_color = tdata.name_color

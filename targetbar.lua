@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '.9'
+addon.version = '.91'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -33,11 +33,11 @@ local igGetCursorScreenPos = imgui.GetCursorScreenPos
 local igDummy              = imgui.Dummy
 local igGetColorU32        = imgui.GetColorU32
 
-local str_find      = string.find
-local str_sub       = string.sub
-local str_lower     = string.lower
-local tonumber      = tonumber
-local print         = print
+local str_find    = string.find
+local str_sub     = string.sub
+local str_lower   = string.lower
+local tonumber    = tonumber
+local print       = print
 local igCond_Always = ImGuiCond_Always
 
 local bit_band   = bit.band
@@ -129,7 +129,7 @@ local EXCLUDED_KEYWORDS = {
     'campaign', 'colonization', 'wide scan', 'communication', 'treasure pool',
     'log out', 'shut down', 'friend list', 'emote list', 'current time',
     'help desk', 'config', 'markers', 'macropalette', 'set bazaar', 
-    'view house', 'key items', 'quests', 'missions'
+    'view house', 'key items', 'quests', 'missions', 'k.O',
 }
 
 ------------------------------------------------------------
@@ -144,7 +144,15 @@ local cast_state = {
     started=false
 }
 
+local pending_cast_state = {
+    name='', cast_string='', target='', target_color={1,1,1,1},
+    target_idx=0, is_item=false,
+    display_target='Self', bar_color_txt=COLOR_CAST_TXT
+}
+
 local cast_finished_time = 0
+local last_cast_frac = 0
+local last_frac_change_time = 0
 local sub_target_persistence = 0
 local sub_target_expires     = 0
 
@@ -181,6 +189,43 @@ local rcache = { win_w = 0, sub_bh = 0 }
 local function update_rcache()
     rcache.win_w  = cfg.bar_width + 16
     rcache.sub_bh = math_max(2, math_floor(cfg.bar_height * 0.5))
+end
+
+------------------------------------------------------------
+-- UTILITY FUNCTIONS
+------------------------------------------------------------
+local function reset_cast()
+    cast_state.name = ''
+    cast_state.cast_string = ''
+    cast_state.target = ''
+    cast_state.target_idx = 0
+    cast_state.is_item = false
+    cast_state.started = false
+    cast_state.last_frac_int = -1
+    cast_finished_time = 0
+    last_cast_frac = 0
+    last_frac_change_time = 0
+    
+    -- Clear pending as well
+    pending_cast_state.name = ''
+end
+
+local function GetMenuHelpText()
+    if pMenuHelp == 0 then return '' end
+    local offset = mem_read_uint32(pMenuHelp)
+    if offset == 0 then return '' end
+    offset = mem_read_uint32(offset)
+    if offset == 0 then return '' end
+    offset = mem_read_uint32(offset + 0xEC)
+    if offset ~= 0 then
+        local str = mem_read_string(offset, 256)
+        if str then
+            local null_pos = str_find(str, '\x00')
+            if null_pos then return str_sub(str, 1, null_pos - 1) end
+            return str
+        end
+    end
+    return ''
 end
 
 ------------------------------------------------------------
@@ -225,30 +270,9 @@ end)
 ashita.events.register('unload', 'targetbar_unload', function()
     main_data = nil
     sub_data  = nil
-    cast_state.name      = ''
+    reset_cast()
     pcall(settings.save)
 end)
-
-------------------------------------------------------------
--- UTILITY: MENU HELP TEXT FETCH
-------------------------------------------------------------
-local function GetMenuHelpText()
-    if pMenuHelp == 0 then return '' end
-    local offset = mem_read_uint32(pMenuHelp)
-    if offset == 0 then return '' end
-    offset = mem_read_uint32(offset)
-    if offset == 0 then return '' end
-    offset = mem_read_uint32(offset + 0xEC)
-    if offset ~= 0 then
-        local str = mem_read_string(offset, 256)
-        if str then
-            local null_pos = str_find(str, '\x00')
-            if null_pos then return str_sub(str, 1, null_pos - 1) end
-            return str
-        end
-    end
-    return ''
-end
 
 ------------------------------------------------------------
 -- PARTY CACHE
@@ -353,7 +377,6 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         out_cache.last_dist_sq = dist_sq
         out_cache.dist_str     = str_format('%.1f', math_sqrt(dist_sq))
 
-        -- Logic: 0-21.9 (Green), 22.0-29.9 (Blue), 30.0-50.0 (Red), 50.1+ (White)
         out_cache.dist_color   = (dist_sq <= 480.0) and COLOR_DIST_NEAR
                                or (dist_sq <= 900.0) and COLOR_DIST_MID
                                or (dist_sq <= 2500.0) and COLOR_DIST_RED
@@ -369,7 +392,7 @@ end
 ------------------------------------------------------------
 -- DRAW: HP BAR
 ------------------------------------------------------------
-local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, force_blue, menu_text, bar_width, show_distance)
+local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, force_blue, menu_text, bar_width, show_distance)
     v_pos[1], v_pos[2] = pos_x, pos_y
     igSetNextWindowPos(v_pos, igCond_Always)
 
@@ -390,13 +413,11 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, fo
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
         if not is_sub then igSetCursorPosY(igGetCursorPosY() + TOP_PADDING) end
 
-        -- 1. Draw Distance (if enabled)
         if show_distance and not data.is_self then
             igTextColored(data.dist_color, data.dist_str)
             igSameLine()
         end
 
-        -- 2. Draw HP Info
         if not data.is_real_npc then
             if data.dead then
                 igTextColored(COLOR_DEAD_TXT, 'DEAD')
@@ -406,20 +427,12 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, fo
             igSameLine()
         end
 
-        -- 3. Draw Menu Text
         if force_blue and menu_text and menu_text ~= '' then
             igTextColored(COLOR_CAST_TXT, menu_text)
             igSameLine()
         end
 
-        -- 4. Draw Target Name
         igTextColored(data.name_color, data.display_name)
-
-        -- 5. Draw Spell (if active)
-        if has_spell then
-            igSameLine()
-            igTextColored(cast_state.bar_color_txt, cast_state.cast_string)
-        end
 
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
         local cx, cy = igGetCursorScreenPos()
@@ -466,13 +479,12 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y, bar_width)
 
         local nc = cast_state.bar_color_txt
         igTextColored(nc, cast_state.name ~= '' and cast_state.name
-                        or (cast_state.is_item and 'Item' or 'Action'))
+                                            or (cast_state.is_item and 'Item' or 'Action'))
         igSameLine()
         igTextColored(COLOR_ARROW, ' -> ')
         igSameLine()
         igTextColored(cast_state.target_color, cast_state.display_target)
 
-        -- Progress bar logic
         if cast_frac > 0 then
             igSameLine()
             local fi = math_floor(cast_frac * 100)
@@ -519,8 +531,18 @@ local function resolve_item_name(data)
 end
 
 ------------------------------------------------------------
--- PACKET OUT
+-- PACKETS
 ------------------------------------------------------------
+ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
+    if e.id == 0x028 then
+        local msg_id = unpack('H', e.data_modified, 0x06)
+
+        if msg_id == 7 or msg_id == 10 or msg_id == 13 or msg_id == 14 or msg_id == 76 or msg_id == 110 or msg_id == 111 then
+            reset_cast()
+        end
+    end
+end)
+
 ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
 
@@ -532,20 +554,18 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     local action_name, is_item = '', false
 
     if e.id == 0x1A then
-        if category == 7 or category == 9 or category == 13 or category == 14 then
-            return
-        end
+        if category == 7 or category == 9 or category == 13 or category == 14 then return end
 
         if category == 3 then
             local r = rm:GetSpellById(action_id)
             if r then action_name = r.Name[1] or r.Name[0] end
         elseif category == 5 then
-                local r = rm:GetItemById(action_id)
-                if r then
-                    action_name = r.Name[1] or r.Name[0] or 'Item'
-                else
-                    action_name = 'Item'
-                end
+            local r = rm:GetItemById(action_id)
+            if r then
+                action_name = r.Name[1] or r.Name[0] or 'Item'
+            else
+                action_name = 'Item'
+            end
             is_item = true
         end
     else
@@ -554,11 +574,15 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
         is_item     = true
     end
 
+    local lower_name = str_lower(action_name)
+    for _, keyword in pairs(EXCLUDED_KEYWORDS) do
+        if str_find(lower_name, keyword) then return end
+    end
+
     if action_name == '' or action_name == 'Gil' then return end
 
-    local target_name   = 'Self'
+    local target_name = 'Self'
     local target_color = COLOR_PC_SELF
-
     if not is_item then
         local tdata = (target_idx ~= 0 and entity)
             and parse_target_data(target_idx, packet_target_cache, false, entity, cached_targ)
@@ -570,20 +594,15 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     elseif target_idx ~= 0 and entity then
         target_name = entity:GetName(target_idx) or 'Unknown'
     end
-    if action_name ~= cast_state.name or cast_state.started then
-        cast_state.start_time = os.clock()
-        cast_state.started    = false
-    end
 
-    cast_state.name            = action_name
-    cast_state.cast_string     = '> ' .. action_name
-    cast_state.target          = target_name
-    cast_state.target_color    = target_color
-    cast_state.target_idx      = target_idx
-    cast_state.is_item         = is_item
-    cast_state.display_target  = (target_name ~= '') and target_name or 'Self'
-    cast_state.bar_color_txt   = is_item or (is_item and COLOR_ITEM_TXT) or COLOR_CAST_TXT
-    cast_finished_time         = 0
+    pending_cast_state.name        = action_name
+    pending_cast_state.cast_string   = '> ' .. action_name
+    pending_cast_state.target      = target_name
+    pending_cast_state.target_color  = target_color
+    pending_cast_state.target_idx    = target_idx
+    pending_cast_state.is_item       = is_item
+    pending_cast_state.display_target= (target_name ~= '') and target_name or 'Self'
+    pending_cast_state.bar_color_txt = is_item and COLOR_ITEM_TXT or COLOR_CAST_TXT
 end)
 
 ------------------------------------------------------------
@@ -592,36 +611,62 @@ end)
 ashita.events.register('d3d_present', 'targetbar_render', function()
     if not is_ui_visible then return end
 
-    local now       = os_clock()
-    local px        = cfg.pos_x
-    local py        = cfg.pos_y
-    local bw        = cfg.bar_width
-    local bh        = cfg.bar_height
+    local now      = os_clock()
+    local px       = cfg.pos_x
+    local py       = cfg.pos_y
+    local bw       = cfg.bar_width
+    local bh       = cfg.bar_height
     local show_dist = cfg.show_distance
 
-    local cb        = cached_cb
+    local cb       = cached_cb
     local cast_frac = (cb and cb:GetPercent()) or 0
+
+    if pending_cast_state.name ~= '' and last_cast_frac < 0.02 and cast_frac > 0 then
+        cast_state.name          = pending_cast_state.name
+        cast_state.cast_string   = pending_cast_state.cast_string
+        cast_state.target        = pending_cast_state.target
+        cast_state.target_color  = pending_cast_state.target_color
+        cast_state.target_idx    = pending_cast_state.target_idx
+        cast_state.is_item       = pending_cast_state.is_item
+        cast_state.display_target= pending_cast_state.display_target
+        cast_state.bar_color_txt = pending_cast_state.bar_color_txt
+        cast_state.started       = true
+        cast_state.start_time    = os.clock()
+        pending_cast_state.name  = ''
+    end
 
     if cast_frac > 0 then
         cast_state.started = true
     end
 
+    -- 1. Stagnation Check
+    if cast_state.name ~= '' and cast_frac > 0 and cast_frac < 1.0 then
+        if math_abs(cast_frac - last_cast_frac) > 0.001 then
+            last_frac_change_time = now
+        elseif (now - last_frac_change_time > 0.25) then
+            reset_cast()
+        end
+    end
+    last_cast_frac = cast_frac
+
+    -- 2. Cleanup Logic
     if cast_state.name ~= '' then
-        if not cast_state.started and (now - cast_state.start_time > 0.5) then
-            cast_state.name = ''
-            cast_state.started = false
-            cast_finished_time = 0
+        local now = os.clock()
+        -- FAIL-SAFE: Force reset if casting takes longer than 10 seconds 
+        -- (Prevents the "stuck" state where the bar never appears again)
+        if (now - cast_state.start_time > 10.0) then
+            reset_cast()
+        elseif not cast_state.started and (now - cast_state.start_time > 0.5) then
+            reset_cast()
         elseif cast_frac >= 1.0 then
             if cast_finished_time == 0 then cast_finished_time = now end
         elseif cast_frac > 0 and cast_frac < 1.0 then
             cast_finished_time = 0
         elseif cast_finished_time > 0 and (now - cast_finished_time >= FINISH_DELAY) then
-            cast_state.name = ''
-            cast_state.started = false
-            cast_finished_time = 0
+            reset_cast()
         end
     end
-
+    
     local has_cast = cast_state.name ~= ''
     local targ   = cached_targ
     local entity = cached_entity
@@ -683,20 +728,34 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local current_y = py
 
     if main_data then
-        local force_blue = (sub_data ~= nil) or (last_menu_text ~= nil and last_menu_text ~= '')
-        local show_spell = (has_cast and cast_state.target_idx == main_idx) and not force_blue
-        draw_bar(main_data, '##targetbar_main', px, current_y,
-            bh, false,
-            show_spell,
-            force_blue, last_menu_text, bw, show_dist)
-        current_y = current_y - bh - SUB_BAR_OFFSET
+    local force_blue = (sub_data ~= nil) or (last_menu_text ~= nil and last_menu_text ~= '')
+    local show_spell = (has_cast and cast_state.target_idx == main_idx) and not force_blue
+
+    draw_bar(main_data, '##targetbar_main', px, current_y, 
+        bh,             -- bar_h
+        false,          -- is_sub
+        force_blue,     -- force_blue
+        last_menu_text, -- menu_text
+        bw,             -- bar_width
+        show_dist)      -- show_distance
+        
+    current_y = current_y - bh - SUB_BAR_OFFSET
     end
 
     if sub_data then
-        draw_bar(sub_data, '##targetbar_sub', px, current_y,
-            rcache.sub_bh, true,
-            has_cast and cast_state.target_idx == sub_idx,
-            false, '', bw, show_dist)
+        -- Corrected alignment
+        draw_bar(
+            sub_data, 
+            '##targetbar_sub', 
+            px, 
+            current_y, 
+            rcache.sub_bh,             -- bar_h
+            true,                      -- is_sub
+            (has_cast and cast_state.target_idx == sub_idx), -- force_blue
+            nil,                       -- menu_text
+            bw,                        -- bar_width 
+            show_dist                  -- show_distance 
+        )
         current_y = current_y - rcache.sub_bh - SUB_BAR_OFFSET - 10
     end
 

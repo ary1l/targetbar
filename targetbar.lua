@@ -99,6 +99,7 @@ local COLOR_ITEM_TXT   = {0.72, 0.46, 1.00, 1.0}
 local COLOR_HP_TXT     = {0.80, 0.80, 0.80, 1.0}
 local COLOR_DEAD_TXT   = {0.60, 0.20, 0.20, 1.0}
 local COLOR_DIST_FAR   = {1.00, 1.00, 1.00, 1.0}
+local COLOR_DIST_RED   = {1.0, 0.2, 0.2, 1.0}
 local COLOR_DIST_MID   = {0.00, 0.78, 1.00, 1.0}
 local COLOR_DIST_NEAR  = {0.29, 1.00, 0.29, 1.0}
 local COLOR_NPC        = {0.55, 0.89, 0.52, 1.0}
@@ -320,12 +321,16 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
                             or HP_COLOR_LUT[math_max(0, math_min(100, hp_pct))]
     end
 
-    if not out_cache.last_dist_sq
+	if not out_cache.last_dist_sq
     or math_abs(out_cache.last_dist_sq - dist_sq) > math_max(1.0, out_cache.last_dist_sq * 0.02) then
         out_cache.last_dist_sq = dist_sq
         out_cache.dist_str     = str_format('%.1f', math_sqrt(dist_sq))
-        out_cache.dist_color   = dist_sq <= 441.0  and COLOR_DIST_NEAR
-                                or (dist_sq <= 2500.0 and COLOR_DIST_MID or COLOR_DIST_FAR)
+        
+        -- Logic: 0-21.9 (Green), 22.0-29.9 (Blue), 30.0-50.0 (Red), 50.1+ (White)
+        out_cache.dist_color   = (dist_sq <= 480.0) and COLOR_DIST_NEAR
+                                or (dist_sq <= 900.0) and COLOR_DIST_MID
+                                or (dist_sq <= 2500.0) and COLOR_DIST_RED
+                                or COLOR_DIST_FAR
     end
 
     out_cache.name_color  = name_color

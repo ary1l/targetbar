@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '0.9'
+addon.version = '1.0'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -14,9 +14,9 @@ local rm = AshitaCore:GetResourceManager()
 
 local pMenuHelp = ashita.memory.find(0, 0, '5350E8????????5F885D??5E5D5BC3A1????????85C0????538BCDE8', 16, 0)
 
+-- Localized API lookups
 local mem_read_uint32      = ashita.memory.read_uint32
 local mem_read_string      = ashita.memory.read_string
-
 local igSetNextWindowPos   = imgui.SetNextWindowPos
 local igSetNextWindowSize  = imgui.SetNextWindowSize
 local igBegin              = imgui.Begin
@@ -32,6 +32,7 @@ local igTextColored        = imgui.TextColored
 local igSameLine           = imgui.SameLine
 local igGetCursorScreenPos = imgui.GetCursorScreenPos
 local igDummy              = imgui.Dummy
+local igGetColorU32        = imgui.GetColorU32
 
 local bit_band   = bit.band
 local bit_bor    = bit.bor
@@ -56,7 +57,7 @@ local FLAGS_LOCKED = bit_bor(
     ImGuiWindowFlags_NoDecoration, ImGuiWindowFlags_AlwaysAutoResize,
     ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags_NoNav,
     ImGuiWindowFlags_NoBackground, ImGuiWindowFlags_NoMove,
-    ImGuiWindowFlags_NoMouseInputs, ImGuiWindowFlags_NoSavedSettings)
+    ImGuiWindowFlags_NoMouseInputs)
 
 ------------------------------------------------------------
 -- CONFIG & CONSTANTS
@@ -81,12 +82,12 @@ local SUB_BAR_OFFSET  = 30
 ------------------------------------------------------------
 -- COLORS
 ------------------------------------------------------------
-local COLOR_PANEL_BG   = imgui.GetColorU32({0.05, 0.05, 0.05, 0.55})
-local COLOR_PANEL_BLUE = imgui.GetColorU32({0.05, 0.05, 0.35, 0.45})
-local COLOR_BAR_BG     = imgui.GetColorU32({0.18, 0.18, 0.18, 0.0})
-local COLOR_BAR_DEAD   = imgui.GetColorU32({0.59, 0.12, 0.12, 1.0})
-local COLOR_CAST       = imgui.GetColorU32({0.20, 0.75, 0.20, 1.0})
-local COLOR_ITEM_BAR   = imgui.GetColorU32({0.72, 0.46, 1.00, 1.0})
+local COLOR_PANEL_BG   = igGetColorU32({0.05, 0.05, 0.05, 0.55})
+local COLOR_PANEL_BLUE = igGetColorU32({0.05, 0.05, 0.35, 0.45})
+local COLOR_BAR_BG     = igGetColorU32({0.18, 0.18, 0.18, 0.0})
+local COLOR_BAR_DEAD   = igGetColorU32({0.59, 0.12, 0.12, 1.0})
+local COLOR_CAST       = igGetColorU32({0.20, 0.75, 0.20, 1.0})
+local COLOR_ITEM_BAR   = igGetColorU32({0.72, 0.46, 1.00, 1.0})
 local COLOR_CAST_TXT   = {0.20, 0.75, 0.20, 1.0}
 local COLOR_ITEM_TXT   = {0.72, 0.46, 1.00, 1.0}
 local COLOR_HP_TXT     = {0.80, 0.80, 0.80, 1.0}
@@ -123,14 +124,7 @@ local cast_state = {
     name='', cast_string='', target='', target_color={1,1,1,1},
     target_idx=0, is_item=false, is_instant=false,
     last_pct=0, last_tick=0, queued_time=0,
-    last_progress_time=0,
     frac_str=' 0%', last_frac_int=-1,
-}
-
-local pending_instant_cast = {
-    active = false, name = '', cast_string = '', target = '',
-    target_color = {1,1,1,1}, target_idx = 0, is_item = false,
-    is_instant = false, queued_time = 0
 }
 
 local main_target_cache   = {}
@@ -138,23 +132,20 @@ local sub_target_cache    = {}
 local packet_target_cache = {}
 local party_id_cache      = {}
 
-local last_logic_update   = 0
-local last_main_idx       = 0
-local last_sub_idx        = 0
+local last_logic_update     = 0
+local last_main_idx         = 0
+local last_sub_idx          = 0
 local last_sub_idx_for_menu = -1
-local last_scan_time      = 0
-local self_id_cache       = 0
-local self_id_masked      = 0
-local last_menu_text      = ''
+local last_scan_time        = 0
+local self_id_cache         = 0
+local self_id_masked        = 0
+local last_menu_text        = ''
 
 local main_data     = nil
 local sub_data      = nil
 local last_cast_h   = 0
 local is_ui_visible = true
 
-------------------------------------------------------------
--- PRE-ALLOCATED VECTORS
-------------------------------------------------------------
 local v_pos  = {0, 0}
 local v_size = {0, 0}
 local v_p1   = {0, 0}
@@ -184,7 +175,7 @@ ashita.events.register('load', 'targetbar_load', function()
                 end
             end
         end
-        HP_COLOR_LUT[pct] = imgui.GetColorU32(col)
+        HP_COLOR_LUT[pct] = igGetColorU32(col)
     end
 end)
 
@@ -195,9 +186,8 @@ end)
 ashita.events.register('unload', 'targetbar_unload', function()
     main_data = nil
     sub_data  = nil
-    cast_state.name       = ''
+    cast_state.name        = ''
     cast_state.cast_string = ''
-    pending_instant_cast.active = false
     pcall(settings.save)
 end)
 
@@ -278,7 +268,7 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         name_color  = COLOR_NPC
         is_real_npc = true
     else
-        local cs             = entity:GetClaimStatus(tIdx)
+        local cs           = entity:GetClaimStatus(tIdx)
         local claim_status = bit_band(cs or 0, 0xFFFF)
         if claim_status == 0 then
             name_color = COLOR_ENEMY
@@ -428,7 +418,7 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y, is_instant, bar_width)
 
         local nc = cast_state.is_item and COLOR_ITEM_TXT or COLOR_CAST_TXT
         igTextColored(nc, cast_state.name ~= '' and cast_state.name
-                          or (cast_state.is_item and 'Item' or 'Action'))
+                        or (cast_state.is_item and 'Item' or 'Action'))
         igSameLine()
         igTextColored(COLOR_ARROW, ' -> ')
         igSameLine()
@@ -488,68 +478,32 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
 
     local entity     = mm:GetEntity()
-    local party      = mm:GetParty()
     local target_idx = unpack('H', e.data_modified, 0x09)
     local action_id  = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0D) or 0
     local category   = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0B) or 0
 
     local action_name, is_item, is_instant = '', false, false
-    local now = os_clock() -- 
 
-    -- IDENTIFY ACTION
     if e.id == 0x1A then
-        if category == 3 then -- Spell
+        if category == 3 then
             local r = rm:GetSpellById(action_id)
             if r then action_name = r.Name[1] or r.Name[0] end
-            
-            -- Validation: Distance Check
-            local dist_sq = entity:GetDistance(target_idx) or 0
-            if dist_sq > 462 then return end 
-
-        elseif category == 2 then -- WS
-            local r = rm:GetAbilityById(action_id)
-            if r then action_name = r.Name[1] or r.Name[0] end
-            is_instant = true
-            
-            -- Validation: TP
-            local current_tp = party and party:GetMemberTP(0) or 0
-            if current_tp < 1000 then return end
-
         elseif category == 7 or category == 9 or category == 14 then
-            local r = rm:GetAbilityById((category == 7) and action_id or (action_id + 512))
+            local r = rm:GetAbilityById(
+                (category == 7) and action_id or (action_id + 512))
             if r then action_name = r.Name[1] or r.Name[0] end
             is_instant = true
         elseif category == 5 then
             action_name = 'Item'
             is_item     = true
-            is_instant  = true
         end
     else
         local ok, name = pcall(resolve_item_name, e.data_modified)
         action_name = (ok and name) or 'Item'
         is_item     = true
-        is_instant  = true
     end
 
     if action_name == '' or action_name == 'Gil' then return end
-
-    -- ---------------------------------------------------------
-    -- If the memory cast bar is currently visible and progressing,
-    -- ignore new action packets (the server will reject them anyway).
-    -- ---------------------------------------------------------
-    local cb = mm:GetCastBar()
-    if cb then
-        local pct = cb:GetPercent()
-        -- pct > 0 and < 0.98 ensures we are in the middle of a cast.
-        if pct and pct > 0 and pct < 0.98 then
-            return
-        end
-    end
-
-    -- HARD RESET & UPDATE STATE
-    -- Only clear the old state if the new action is valid and proceeding
-    cast_state.last_pct = 0
-    cast_state.last_progress_time = now
 
     local target_name  = 'Self'
     local target_color = COLOR_PC_SELF
@@ -566,48 +520,14 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
         target_name = entity:GetName(target_idx) or 'Unknown'
     end
 
-    if is_instant then
-        pending_instant_cast.active       = true
-        pending_instant_cast.name         = action_name
-        pending_instant_cast.cast_string  = '> ' .. action_name
-        pending_instant_cast.target       = target_name
-        pending_instant_cast.target_color = target_color
-        pending_instant_cast.target_idx   = target_idx
-        pending_instant_cast.is_item      = is_item
-        pending_instant_cast.is_instant   = is_instant
-        pending_instant_cast.queued_time  = now
-    else
-        cast_state.name         = action_name
-        cast_state.cast_string  = '> ' .. action_name
-        cast_state.target       = target_name
-        cast_state.target_color = target_color
-        cast_state.target_idx   = target_idx
-        cast_state.is_item      = is_item
-        cast_state.is_instant   = is_instant
-        cast_state.queued_time  = now
-    end
-end)
-------------------------------------------------------------
--- PACKET IN (Server Confirmation)
-------------------------------------------------------------
-ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
-    if e.id == 0x28 and pending_instant_cast.active then
-        local actor_id = unpack('I', e.data, 0x05)
-        if actor_id == self_id_cache then
-            local now = os_clock()
-            cast_state.name         = pending_instant_cast.name
-            cast_state.cast_string  = pending_instant_cast.cast_string
-            cast_state.target       = pending_instant_cast.target
-            cast_state.target_color = pending_instant_cast.target_color
-            cast_state.target_idx   = pending_instant_cast.target_idx
-            cast_state.is_item      = pending_instant_cast.is_item
-            cast_state.is_instant   = pending_instant_cast.is_instant
-            cast_state.queued_time  = now
-            cast_state.last_progress_time = now
-            
-            pending_instant_cast.active = false
-        end
-    end
+    cast_state.name         = action_name
+    cast_state.cast_string  = '> ' .. action_name
+    cast_state.target       = target_name
+    cast_state.target_color = target_color
+    cast_state.target_idx   = target_idx
+    cast_state.is_item      = is_item
+    cast_state.is_instant   = is_instant
+    cast_state.queued_time  = os_clock()
 end)
 
 ------------------------------------------------------------
@@ -623,136 +543,101 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local bh        = cfg.bar_height
     local show_dist = cfg.show_distance
 
-    if pending_instant_cast.active and (now - pending_instant_cast.queued_time) > 2.0 then
-        pending_instant_cast.active = false
-    end
-
     local cast_frac = 0.0
     local cb = mm:GetCastBar()
     if cb then
         local pct = cb:GetPercent()
-        if pct and (pct < 0.99 or cast_state.name ~= '') then
-            cast_frac = math_max(0.0, math_min(1.0, pct))
-        end
+        if pct then cast_frac = math_max(0.0, math_min(1.0, pct)) end
     end
-
-    -- STAGNATION WATCHDOG: 
-    -- If cast is active, check if progress is being made.
-    if cast_state.name ~= '' and cast_frac > 0 then
-        if math_abs(cast_frac - cast_state.last_pct) > 0.001 then
-            cast_state.last_progress_time = now
-        end
-    end
-
-    -- FORCE CLEAR STUCK BAR:
-    if cast_state.name ~= '' and not cast_state.is_instant then
-        if (now - cast_state.last_progress_time) > 1.0 then
-            cast_state.name = ''
-            cast_state.last_pct = 0
-            cast_state.last_progress_time = 0
-        end
-    end
-
-    local draw_cast = false
-    local draw_frac = 0.0
 
     if cast_frac > 0 then
-        -- Casting actively progressing
-        cast_state.last_pct  = cast_frac
-        cast_state.last_tick = now
-        draw_cast = true
-        draw_frac = cast_frac
-    elseif cast_state.last_pct > 0 then
-        -- Check if it was a successful completion (>= 95%) or an interrupt
-        local is_complete = cast_state.last_pct >= 0.95
-        local timeout = is_complete and 0.5 or 0.0
-        
-        if (now - cast_state.last_tick) < timeout then
-            draw_cast = true
-            draw_frac = cast_state.last_pct
+        if cast_frac ~= cast_state.last_pct then
+            cast_state.last_pct  = cast_frac
+            cast_state.last_tick = now
         else
-            cast_state.name     = ''
-            cast_state.last_pct = 0
+            local timeout = (cast_frac >= 0.99) and 0.2 or 0.75
+            if (now - cast_state.last_tick) > timeout then cast_frac = 0.0 end
         end
     else
-        -- Not casting, last_pct is 0. 
-        if cast_state.name ~= '' then
-            if cast_state.is_instant then
-                -- Instant action flash
-                if (now - cast_state.queued_time) < INSTANT_FLASH then
-                    draw_cast = true
-                    draw_frac = 0.0
-                else
-                    cast_state.name = ''
-                end
-            else
-                -- Waiting for spell to start. Give it 1.0s ping allowance.
-                if (now - cast_state.queued_time) > 1.0 then
-                    cast_state.name = ''
-                end
-            end
-        end
+        cast_state.last_pct  = 0
+        cast_state.last_tick = now
     end
 
-    if cast_state.name == '' then
+    local cast_name    = cast_state.name
+    local has_cast     = cast_name ~= ''
+    local show_instant = cast_frac == 0.0 and has_cast
+                         and (now - cast_state.queued_time) < INSTANT_FLASH
+
+    if cast_frac == 0.0 and not show_instant then
+        cast_state.name        = ''
         cast_state.cast_string = ''
+        has_cast               = false
     end
-
-    if draw_cast and cast_state.name ~= '' then
-        last_cast_h = CAST_STACK_H
-        local cast_base = (sub_data ~= nil) and (py - bh - SUB_BAR_OFFSET) or py
-        draw_cast_bar(draw_frac, px, cast_base - last_cast_h - CAST_WIN_HEIGHT, cast_state.is_instant, bw)
-    else
-        last_cast_h = 0
-    end
-
+    local display_frac = show_instant and (cast_state.is_instant and 0.0 or 1.0) or cast_frac
     local targ   = mm:GetTarget()
     local entity = mm:GetEntity()
-    if not targ or not entity then return end
+    
+    local main_idx = 0
+    local sub_idx  = 0
 
-    local main_idx = targ:GetTargetIndex(0)
-    local sub_raw  = targ:GetIsSubTargetActive()
-    local sub_idx  = (sub_raw ~= nil and sub_raw ~= 0 and sub_raw ~= false)
-                        and targ:GetTargetIndex(1) or 0
+    if targ and entity then
+        main_idx = targ:GetTargetIndex(0)
+        local sub_raw  = targ:GetIsSubTargetActive()
+        sub_idx  = (sub_raw ~= nil and sub_raw ~= 0 and sub_raw ~= false)
+                          and targ:GetTargetIndex(1) or 0
 
-    if (now - last_logic_update > UPDATE_INTERVAL)
-    or (main_idx ~= last_main_idx)
-    or (sub_idx  ~= last_sub_idx) then
-        last_logic_update = now
-        last_main_idx     = main_idx
-        last_sub_idx      = sub_idx
-        refresh_party_cache(now)
+        if (now - last_logic_update > UPDATE_INTERVAL)
+        or (main_idx ~= last_main_idx)
+        or (sub_idx  ~= last_sub_idx) then
+            last_logic_update = now
+            last_main_idx     = main_idx
+            last_sub_idx      = sub_idx
+            refresh_party_cache(now)
 
-        main_data = (main_idx ~= 0)
-            and parse_target_data(main_idx, main_target_cache, false, entity, targ) or nil
+            main_data = (main_idx ~= 0)
+                and parse_target_data(main_idx, main_target_cache, false, entity, targ) or nil
 
-        sub_data  = (sub_idx ~= 0)
-            and parse_target_data(sub_idx, sub_target_cache, true, entity, targ) or nil
+            sub_data  = (sub_idx ~= 0)
+                and parse_target_data(sub_idx, sub_target_cache, true, entity, targ) or nil
 
-        if sub_data then
-            if sub_idx ~= last_sub_idx_for_menu then
-                last_sub_idx_for_menu = sub_idx
-                local raw_text = GetMenuHelpText()
-                last_menu_text = raw_text ~= '' and ('(' .. raw_text .. ')') or ''
+            if sub_data then
+                if sub_idx ~= last_sub_idx_for_menu then
+                    last_sub_idx_for_menu = sub_idx
+                    local raw_text = GetMenuHelpText()
+                    last_menu_text = raw_text ~= '' and ('(' .. raw_text .. ')') or ''
+                end
+            else
+                last_sub_idx_for_menu = -1
+                last_menu_text        = ''
             end
-        else
-            last_sub_idx_for_menu = -1
-            last_menu_text        = ''
         end
+    else
+        main_data = nil
+        sub_data  = nil
     end
+
+    local current_y = py
 
     if main_data then
-        draw_bar(main_data, '##targetbar_main', px, py,
+        draw_bar(main_data, '##targetbar_main', px, current_y,
             bh, false,
-            draw_cast and cast_state.target_idx == main_idx,
+            has_cast and cast_state.target_idx == main_idx,
             sub_data ~= nil, last_menu_text, bw, show_dist)
+        current_y = current_y - bh - SUB_BAR_OFFSET
     end
+
     if sub_data then
-        draw_bar(sub_data, '##targetbar_sub', px,
-            py - bh - SUB_BAR_OFFSET,
-            math_max(2, math_floor(bh * 0.5)), true,
-            draw_cast and cast_state.target_idx == sub_idx,
+        local sub_bh = math_max(2, math_floor(bh * 0.5))
+        draw_bar(sub_data, '##targetbar_sub', px, current_y,
+            sub_bh, true,
+            has_cast and cast_state.target_idx == sub_idx,
             false, '', bw, show_dist)
+        current_y = current_y - sub_bh - SUB_BAR_OFFSET - 10
+    end
+
+    if (display_frac > 0 or show_instant) and cast_state.name ~= '' then
+        local cast_y = current_y
+        draw_cast_bar(display_frac, px, cast_y, cast_state.is_instant, bw)
     end
 end)
 

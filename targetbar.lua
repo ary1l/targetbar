@@ -14,7 +14,6 @@ local rm = AshitaCore:GetResourceManager()
 
 local pMenuHelp = ashita.memory.find(0, 0, '5350E8????????5F885D??5E5D5BC3A1????????85C0????538BCDE8', 16, 0)
 
--- Localized API lookups
 local mem_read_uint32      = ashita.memory.read_uint32
 local mem_read_string      = ashita.memory.read_string
 local igSetNextWindowPos   = imgui.SetNextWindowPos
@@ -34,7 +33,6 @@ local igGetCursorScreenPos = imgui.GetCursorScreenPos
 local igDummy              = imgui.Dummy
 local igGetColorU32        = imgui.GetColorU32
 
--- Newly Localized Standard/Global Variables for Performance
 local str_find      = string.find
 local str_sub       = string.sub
 local str_lower     = string.lower
@@ -366,7 +364,7 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, fo
             igSameLine()
         end
 
-        -- 2. Draw HP Info (Drawn before Name per request)
+        -- 2. Draw HP Info
         if not data.is_real_npc then
             if data.dead then
                 igTextColored(COLOR_DEAD_TXT, 'DEAD')
@@ -376,7 +374,7 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, fo
             igSameLine()
         end
 
-        -- 3. Draw Menu Text (Blue Bar Context)
+        -- 3. Draw Menu Text
         if force_blue and menu_text and menu_text ~= '' then
             igTextColored(COLOR_CAST_TXT, menu_text)
             igSameLine()
@@ -505,7 +503,6 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     local action_name, is_item, is_instant = '', false, false
 
     if e.id == 0x1A then
-        -- Explicitly exclude WS (7, 13) and JA (9, 14) from triggering the cast bar
         if category == 7 or category == 9 or category == 13 or category == 14 then
             return
         end
@@ -631,7 +628,6 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
             refresh_party_cache(now)
 
             local raw_text = GetMenuHelpText()
-            -- Menu Exclusion Check happens here:
             if EXCLUDED_MENU_TEXT[raw_text] then
                 last_menu_text = ''
             else

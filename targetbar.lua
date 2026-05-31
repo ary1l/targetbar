@@ -34,6 +34,14 @@ local igGetCursorScreenPos = imgui.GetCursorScreenPos
 local igDummy              = imgui.Dummy
 local igGetColorU32        = imgui.GetColorU32
 
+-- Newly Localized Standard/Global Variables for Performance
+local str_find      = string.find
+local str_sub       = string.sub
+local str_lower     = string.lower
+local tonumber      = tonumber
+local print         = print
+local igCond_Always = ImGuiCond_Always
+
 local bit_band   = bit.band
 local bit_bor    = bit.bor
 local str_format = string.format
@@ -214,8 +222,8 @@ local function GetMenuHelpText()
     if offset ~= 0 then
         local str = mem_read_string(offset, 256)
         if str then
-            local null_pos = str:find('\x00')
-            if null_pos then return str:sub(1, null_pos - 1) end
+            local null_pos = str_find(str, '\x00')
+            if null_pos then return str_sub(str, 1, null_pos - 1) end
             return str
         end
     end
@@ -333,10 +341,10 @@ end
 ------------------------------------------------------------
 local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, force_blue, menu_text, bar_width, show_distance)
     v_pos[1], v_pos[2] = pos_x, pos_y
-    igSetNextWindowPos(v_pos, ImGuiCond_Always)
+    igSetNextWindowPos(v_pos, igCond_Always)
 
     v_size[1], v_size[2] = bar_width + 16, 0
-    igSetNextWindowSize(v_size, ImGuiCond_Always)
+    igSetNextWindowSize(v_size, igCond_Always)
 
     p_open[1] = true
     if igBegin(win_id, p_open, FLAGS_LOCKED) then
@@ -409,10 +417,10 @@ end
 ------------------------------------------------------------
 local function draw_cast_bar(cast_frac, pos_x, pos_y, is_instant, bar_width)
     v_pos[1], v_pos[2] = pos_x, pos_y
-    igSetNextWindowPos(v_pos, ImGuiCond_Always)
+    igSetNextWindowPos(v_pos, igCond_Always)
 
     v_size[1], v_size[2] = bar_width + 16, 0
-    igSetNextWindowSize(v_size, ImGuiCond_Always)
+    igSetNextWindowSize(v_size, igCond_Always)
 
     p_open[1] = true
     if igBegin('##targetbar_cast', p_open, FLAGS_LOCKED) then
@@ -674,11 +682,11 @@ end)
 ashita.events.register('command', 'targetbar_cmd', function(e)
     local args = e.command:args()
     if #args == 0 then return end
-    local cmd = args[1]:lower()
+    local cmd = str_lower(args[1])
     if cmd ~= '/targetbar' then return end
     e.blocked = true
 
-    local sub = args[2] and args[2]:lower() or 'toggle'
+    local sub = args[2] and str_lower(args[2]) or 'toggle'
     if sub == 'toggle' then
         is_ui_visible = not is_ui_visible
     elseif sub == 'show' then

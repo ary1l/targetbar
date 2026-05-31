@@ -152,6 +152,7 @@ local cast_state = {
     target_idx=0, is_item=false, is_instant=false,
     last_pct=0, last_tick=0, queued_time=0,
     frac_str=' 0%', last_frac_int=-1,
+    display_target='Self', bar_color_txt=COLOR_CAST_TXT,
 }
 
 local sub_target_persistence = 0
@@ -181,6 +182,17 @@ local v_p1   = {0, 0}
 local v_p2   = {0, 0}
 local p_open = {true}
 
+local cached_cb     = nil
+local cached_targ   = nil
+local cached_entity = nil
+
+local rcache = { win_w = 0, sub_bh = 0 }
+
+local function update_rcache()
+    rcache.win_w  = cfg.bar_width + 16
+    rcache.sub_bh = math_max(2, math_floor(cfg.bar_height * 0.5))
+end
+
 ------------------------------------------------------------
 -- LOAD / UNLOAD / SETTINGS
 ------------------------------------------------------------
@@ -206,10 +218,18 @@ ashita.events.register('load', 'targetbar_load', function()
         end
         HP_COLOR_LUT[pct] = igGetColorU32(col)
     end
+
+    cached_cb     = mm:GetCastBar()
+    cached_targ   = mm:GetTarget()
+    cached_entity = mm:GetEntity()
+    update_rcache()
 end)
 
 ashita.events.register('settings', 'settings_update', function(s)
-    if type(s) == 'table' then cfg = s end
+    if type(s) == 'table' then
+        cfg = s
+        update_rcache()
+    end
 end)
 
 ashita.events.register('unload', 'targetbar_unload', function()
@@ -279,9 +299,15 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
     local spawn   = entity:GetSpawnFlags(tIdx) or 0
     local dist_sq = entity:GetDistance(tIdx)   or 0
 
-    local is_pc  = (bit_band(spawn, 0x01) ~= 0)
-    local is_npc = (bit_band(spawn, 0x02) ~= 0)
-    local is_mob = (bit_band(spawn, 0x10) ~= 0)
+    if out_cache.spawn ~= spawn then
+        out_cache.spawn  = spawn
+        out_cache.is_pc  = bit_band(spawn, 0x01) ~= 0
+        out_cache.is_npc = bit_band(spawn, 0x02) ~= 0
+        out_cache.is_mob = bit_band(spawn, 0x10) ~= 0
+    end
+    local is_pc  = out_cache.is_pc
+    local is_npc = out_cache.is_npc
+    local is_mob = out_cache.is_mob
 
     local name_color
     local is_real_npc = false
@@ -337,7 +363,7 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
     or math_abs(out_cache.last_dist_sq - dist_sq) > math_max(1.0, out_cache.last_dist_sq * 0.02) then
         out_cache.last_dist_sq = dist_sq
         out_cache.dist_str     = str_format('%.1f', math_sqrt(dist_sq))
-        
+
         -- Logic: 0-21.9 (Green), 22.0-29.9 (Blue), 30.0-50.0 (Red), 50.1+ (White)
         out_cache.dist_color   = (dist_sq <= 480.0) and COLOR_DIST_NEAR
                                 or (dist_sq <= 900.0) and COLOR_DIST_MID
@@ -358,7 +384,7 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, fo
     v_pos[1], v_pos[2] = pos_x, pos_y
     igSetNextWindowPos(v_pos, igCond_Always)
 
-    v_size[1], v_size[2] = bar_width + 16, 0
+    v_size[1], v_size[2] = rcache.win_w, 0
     igSetNextWindowSize(v_size, igCond_Always)
 
     p_open[1] = true
@@ -403,9 +429,7 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, fo
         -- 5. Draw Spell (if active)
         if has_spell then
             igSameLine()
-            igTextColored(
-                cast_state.is_item and COLOR_ITEM_TXT or COLOR_CAST_TXT,
-                cast_state.cast_string)
+            igTextColored(cast_state.bar_color_txt, cast_state.cast_string)
         end
 
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
@@ -434,7 +458,7 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y, is_instant, bar_width)
     v_pos[1], v_pos[2] = pos_x, pos_y
     igSetNextWindowPos(v_pos, igCond_Always)
 
-    v_size[1], v_size[2] = bar_width + 16, 0
+    v_size[1], v_size[2] = rcache.win_w, 0
     igSetNextWindowSize(v_size, igCond_Always)
 
     p_open[1] = true
@@ -451,14 +475,13 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y, is_instant, bar_width)
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
         igSetCursorPosY(igGetCursorPosY() + TOP_PADDING)
 
-        local nc = cast_state.is_item and COLOR_ITEM_TXT or COLOR_CAST_TXT
+        local nc = cast_state.bar_color_txt
         igTextColored(nc, cast_state.name ~= '' and cast_state.name
                         or (cast_state.is_item and 'Item' or 'Action'))
         igSameLine()
         igTextColored(COLOR_ARROW, ' -> ')
         igSameLine()
-        igTextColored(cast_state.target_color,
-            cast_state.target ~= '' and cast_state.target or 'Self')
+        igTextColored(cast_state.target_color, cast_state.display_target)
 
         if not is_instant then
             igSameLine()
@@ -496,13 +519,13 @@ local function resolve_item_name(data)
     local slot      = unpack('B', data, 15)
     local container = unpack('B', data, 17)
     local inv       = mm:GetInventory()
-    
+
     if not inv then return 'Item' end
     local item = inv:GetContainerItem(container, slot)
-    
+
     if not item then return 'Item' end
     local r = rm:GetItemById(item.Id)
-    
+
     return (r and (r.Name[1] or r.Name[0])) or 'Item'
 end
 
@@ -512,7 +535,7 @@ end
 ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
 
-    local entity     = mm:GetEntity()
+    local entity     = cached_entity
     local target_idx = unpack('H', e.data_modified, 0x09)
     local action_id  = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0D) or 0
     local category   = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0B) or 0
@@ -549,7 +572,7 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
 
     if not is_item then
         local tdata = (target_idx ~= 0 and entity)
-            and parse_target_data(target_idx, packet_target_cache, false, entity, mm:GetTarget())
+            and parse_target_data(target_idx, packet_target_cache, false, entity, cached_targ)
             or nil
         if tdata then
             target_name  = tdata.display_name
@@ -567,6 +590,8 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     cast_state.is_item         = is_item
     cast_state.is_instant      = is_instant
     cast_state.queued_time     = os_clock()
+    cast_state.display_target  = (target_name ~= '') and target_name or 'Self'
+    cast_state.bar_color_txt   = is_item and COLOR_ITEM_TXT or COLOR_CAST_TXT
 end)
 
 ------------------------------------------------------------
@@ -583,7 +608,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local show_dist = cfg.show_distance
 
     local cast_frac = 0.0
-    local cb = mm:GetCastBar()
+    local cb = cached_cb
     if cb then
         local pct = cb:GetPercent()
         if pct then cast_frac = math_max(0.0, math_min(1.0, pct)) end
@@ -606,18 +631,19 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local has_cast     = cast_name ~= ''
     local show_instant = cast_frac == 0.0 and has_cast
                          and (now - cast_state.queued_time) < INSTANT_FLASH
-
     if cast_frac <= 0.0 and not show_instant then
-        cast_state.name        = ''
-        cast_state.cast_string = ''
-        cast_state.target_idx  = 0
-        has_cast               = false
+        if has_cast then
+            cast_state.name        = ''
+            cast_state.cast_string = ''
+            cast_state.target_idx  = 0
+            has_cast               = false
+        end
     end
-    
+
     local display_frac = show_instant and (cast_state.is_instant and 0.0 or 1.0) or cast_frac
-    local targ   = mm:GetTarget()
-    local entity = mm:GetEntity()
-    
+    local targ   = cached_targ
+    local entity = cached_entity
+
     local main_idx = 0
     local sub_idx  = 0
 
@@ -675,15 +701,14 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     end
 
     if sub_data then
-        local sub_bh = math_max(2, math_floor(bh * 0.5))
         draw_bar(sub_data, '##targetbar_sub', px, current_y,
-            sub_bh, true,
+            rcache.sub_bh, true,
             has_cast and cast_state.target_idx == sub_idx,
             false, '', bw, show_dist)
-        current_y = current_y - sub_bh - SUB_BAR_OFFSET - 10
+        current_y = current_y - rcache.sub_bh - SUB_BAR_OFFSET - 10
     end
 
-    if (display_frac > 0 or show_instant) and cast_state.name ~= '' then
+    if (display_frac > 0 or show_instant) and has_cast then
         local cast_y = current_y
         draw_cast_bar(display_frac, px, cast_y, cast_state.is_instant, bw)
     end
@@ -718,6 +743,7 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
             elseif sub == 'x'      then cfg.pos_x      = val
             else                        cfg.pos_y      = val end
             pcall(settings.save)
+            update_rcache()
             print('[targetbar] ' .. sub .. ': ' .. val)
         end
     elseif sub == 'help' then

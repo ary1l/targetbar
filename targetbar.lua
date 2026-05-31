@@ -140,7 +140,8 @@ local EXCLUDED_MENU_TEXT = {
 	['Search']	   = true,
 	['Linkshell']  = true,
 	['Region Info'] = true,
-	['Map']			= true,
+	['Map']		   = true,
+	['Log Window'] = true,
 }
 
 ------------------------------------------------------------

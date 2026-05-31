@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '1.0'
+addon.version = '.9a'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -69,7 +69,7 @@ local default_cfg = {
 local cfg = default_cfg
 
 local CAST_BAR_HEIGHT = 8
-local INSTANT_FLASH   = 2.5
+local INSTANT_FLASH   = 1.5
 local UPDATE_INTERVAL = 0.15
 local SCAN_INTERVAL   = 1.0
 
@@ -80,7 +80,7 @@ local CAST_STACK_H    = 25
 local SUB_BAR_OFFSET  = 30
 
 ------------------------------------------------------------
--- COLORS
+-- COLORS & TABLES
 ------------------------------------------------------------
 local COLOR_PANEL_BG   = igGetColorU32({0.05, 0.05, 0.05, 0.55})
 local COLOR_PANEL_BLUE = igGetColorU32({0.05, 0.05, 0.35, 0.45})
@@ -116,6 +116,14 @@ local HP_GRADIENT = {
 local HP_COLOR_LUT    = {}
 local PERCENT_STR_LUT = {}
 for i = 0, 100 do PERCENT_STR_LUT[i] = tostring(i) .. '%' end
+
+-- Exclusions for menu text to ensure only relevant spell/action names appear
+local EXCLUDED_MENU_TEXT = {
+    ['Commands']   = true,
+    ['Magic List'] = true,
+    ['Abilities']  = true,
+    ['Items']      = true,
+}
 
 ------------------------------------------------------------
 -- STATE
@@ -350,7 +358,7 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, fo
             igSameLine()
         end
 
-        -- 2. Draw HP Info
+        -- 2. Draw HP Info (Drawn before Name per request)
         if not data.is_real_npc then
             if data.dead then
                 igTextColored(COLOR_DEAD_TXT, 'DEAD')
@@ -462,7 +470,7 @@ end
 -- ITEM NAME LOOKUP
 ------------------------------------------------------------
 local function resolve_item_name(data)
-    local slot    = unpack('B', data, 15)
+    local slot      = unpack('B', data, 15)
     local container = unpack('B', data, 17)
     local inv       = mm:GetInventory()
     
@@ -489,16 +497,21 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     local action_name, is_item, is_instant = '', false, false
 
     if e.id == 0x1A then
+        -- Explicitly exclude WS (7, 13) and JA (9, 14) from triggering the cast bar
+        if category == 7 or category == 9 or category == 13 or category == 14 then
+            return
+        end
+
         if category == 3 then
             local r = rm:GetSpellById(action_id)
             if r then action_name = r.Name[1] or r.Name[0] end
         elseif category == 5 then
-            local r = rm:GetItemById(action_id)
-            if r then
-                action_name = r.Name[1] or r.Name[0] or 'Item'
-            else
-                action_name = 'Item'
-            end
+                local r = rm:GetItemById(action_id)
+                if r then
+                    action_name = r.Name[1] or r.Name[0] or 'Item'
+                else
+                    action_name = 'Item'
+                end
             is_item = true
         end
     else
@@ -610,7 +623,12 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
             refresh_party_cache(now)
 
             local raw_text = GetMenuHelpText()
-            last_menu_text = (raw_text ~= '' and raw_text ~= nil) and ('(' .. raw_text .. ')') or ''
+            -- Menu Exclusion Check happens here:
+            if EXCLUDED_MENU_TEXT[raw_text] then
+                last_menu_text = ''
+            else
+                last_menu_text = (raw_text ~= '' and raw_text ~= nil) and ('(' .. raw_text .. ')') or ''
+            end
 
             main_data = (main_idx ~= 0)
                 and parse_target_data(main_idx, main_target_cache, false, entity, targ) or nil
@@ -625,7 +643,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
 
     local current_y = py
 
-	if main_data then
+    if main_data then
         local force_blue = (sub_data ~= nil) or (last_menu_text ~= nil and last_menu_text ~= '')
         local show_spell = (has_cast and cast_state.target_idx == main_idx) and not force_blue
         draw_bar(main_data, '##targetbar_main', px, current_y,

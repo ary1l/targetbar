@@ -124,12 +124,23 @@ local HP_COLOR_LUT    = {}
 local PERCENT_STR_LUT = {}
 for i = 0, 100 do PERCENT_STR_LUT[i] = tostring(i) .. '%' end
 
--- Exclusions for menu text to ensure only relevant spell/action names appear
+-- Exclusions for menu text to ensure only relevant spell/JA/WS names appear
 local EXCLUDED_MENU_TEXT = {
     ['Commands']   = true,
     ['Magic List'] = true,
     ['Abilities']  = true,
     ['Items']      = true,
+	['Trade']	   = true,
+	['Conquest']   = true,
+	['Chat']	   = true,
+	['Status']	   = true,
+	['Equipment']  = true,
+	['Synthesis']  = true,
+	['Party'] 	   = true,
+	['Search']	   = true,
+	['Linkshell']  = true,
+	['Region Info'] = true,
+	['Map']			= true,
 }
 
 ------------------------------------------------------------

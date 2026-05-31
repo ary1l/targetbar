@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '.9100'
+addon.version = '.9901'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -84,6 +84,12 @@ local PANEL_PADDING   = 4
 local TOP_PADDING     = 2
 local SUB_BAR_OFFSET  = 30
 
+local CAST_IDLE_EPS     = 0.02
+local CAST_RESTART_DROP = 0.05
+
+local FALLBACK_GRACE     = 0.30
+local FALLBACK_CAST_TIME = 3.00
+
 ------------------------------------------------------------
 -- COLORS & TABLES
 ------------------------------------------------------------
@@ -121,7 +127,7 @@ local HP_GRADIENT = {
 
 local HP_COLOR_LUT         = {}
 local PERCENT_STR_LUT      = {}
-local CAST_PERCENT_STR_LUT = {}  -- pre-baked ' N%' strings; avoids str_format alloc every cast frame
+local CAST_PERCENT_STR_LUT = {}
 for i = 0, 100 do
     PERCENT_STR_LUT[i]      = tostring(i) .. '%'
     CAST_PERCENT_STR_LUT[i] = ' ' .. tostring(i) .. '%'
@@ -139,16 +145,13 @@ local EXCLUDED_KEYWORDS = {
 
 ------------------------------------------------------------
 -- STATE
--- cast_string and target removed: were set but never read;
--- only display_target and name are actually rendered.
--- last_frac_int removed: was assigned in draw_cast_bar but
--- never consumed by any condition or external code.
 ------------------------------------------------------------
 local cast_state = {
     name='', target_color={1,1,1,1},
     target_idx=0, is_item=false,
     display_target='Self', bar_color_txt=COLOR_CAST_TXT,
-    start_time=0, started=false
+    start_time=0, started=false,
+    time_driven=false, duration=0
 }
 
 local pending_cast_state = {
@@ -159,7 +162,10 @@ local pending_cast_state = {
 
 local cast_finished_time     = 0
 local last_cast_frac         = 0
+local last_disp_frac         = 0
 local last_frac_change_time  = 0
+local pending_time           = 0
+local cb_alive               = false
 local sub_target_persistence = 0
 local sub_target_expires     = 0
 
@@ -176,7 +182,7 @@ local last_scan_time     = 0
 local self_id_cache      = 0
 local self_id_masked     = 0
 local last_menu_text     = ''
-local last_raw_menu_text = ''  -- change-detection: skip str_lower+loop when text unchanged
+local last_raw_menu_text = ''
 
 local main_data     = nil
 local sub_data      = nil
@@ -203,13 +209,15 @@ end
 -- UTILITY FUNCTIONS
 ------------------------------------------------------------
 local function reset_cast()
-    cast_state.name       = ''
-    cast_state.target_idx = 0
-    cast_state.is_item    = false
-    cast_state.started    = false
-    cast_finished_time    = 0
-    last_cast_frac        = 0
-    last_frac_change_time = 0
+    cast_state.name        = ''
+    cast_state.target_idx  = 0
+    cast_state.is_item     = false
+    cast_state.started     = false
+    cast_state.time_driven = false
+    cast_finished_time     = 0
+    last_cast_frac         = 0
+    last_disp_frac         = 0
+    last_frac_change_time  = 0
     pending_cast_state.name = ''
 end
 
@@ -308,12 +316,19 @@ end
 ------------------------------------------------------------
 local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, targ)
     if not tIdx or tIdx == 0 then return nil end
-    local sId = entity:GetServerId(tIdx)
-    if (not sId or sId == 0) and tIdx ~= 0 then return nil end
+    
+    -- Attempt to get the name first so we have something to display
+    local cur_name = entity:GetName(tIdx) or 'Unknown'
+    
+    -- Check for ServerID, but do not return nil if it is missing
+    local sId = entity:GetServerId(tIdx) or 0
+    
+    -- If we have no ServerID and the name is 'Unknown', it might be invalid
+    if sId == 0 and cur_name == 'Unknown' then return nil end
 
     local hp_pct  = entity:GetHPPercent(tIdx) or 0
     local spawn   = entity:GetSpawnFlags(tIdx) or 0
-    local dist_sq = entity:GetDistance(tIdx)   or 0
+    local dist_sq = entity:GetDistance(tIdx)  or 0
 
     if out_cache.spawn ~= spawn then
         out_cache.spawn  = spawn
@@ -488,7 +503,6 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y, bar_width)
 
         if cast_frac > 0 then
             igSameLine()
-            -- LUT lookup replaces str_format alloc every frame
             igTextColored(COLOR_HP_TXT, CAST_PERCENT_STR_LUT[math_floor(cast_frac * 100)])
         end
 
@@ -538,38 +552,50 @@ ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
         or msg_id == 76 or msg_id == 110 or msg_id == 111 then
             reset_cast()
         end
+    elseif e.id == 0x00A then
+        reset_cast()
+        cb_alive               = false
+        sub_target_persistence = 0
+        sub_target_expires     = 0
+        last_main_idx          = -1
+        last_sub_idx           = -1
+        last_logic_update      = 0
+        last_scan_time         = 0
+        self_id_cache          = 0
+        self_id_masked         = 0
+        last_menu_text         = ''
+        last_raw_menu_text     = ''
+        main_data              = nil
+        sub_data               = nil
+        cached_cb     = mm:GetCastBar()
+        cached_targ   = mm:GetTarget()
+        cached_entity = mm:GetEntity()
     end
 end)
 
+
+
 ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
-
-    local entity   = cached_entity
+    
     local target_idx = unpack('H', e.data_modified, 0x09)
-    local category   = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0B) or 0
-    local action_id  = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0D) or 0
-
+    local category = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0B) or 0
+    local action_id = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0D) or 0
+    
+    -- Get a fresh entity manager here
+    local entity_mgr = mm:GetEntity()
+    
     local action_name, is_item = '', false
-
-    if e.id == 0x1A then
-        if category == 7 or category == 9 or category == 13 or category == 14 then return end
-
-        if category == 3 then
-            local r = rm:GetSpellById(action_id)
-            if r then action_name = r.Name[1] or r.Name[0] end
-        elseif category == 5 then
-            local r = rm:GetItemById(action_id)
-            action_name = (r and (r.Name[1] or r.Name[0])) or 'Item'
-            is_item = true
-        end
-    else
-        local ok, name = pcall(resolve_item_name, e.data_modified)
-        action_name = (ok and name) or 'Item'
-        is_item     = true
+    if e.id == 0x1A and category == 3 then
+        local r = rm:GetSpellById(action_id)
+        if r then action_name = r.Name[1] or r.Name[0] end
+    elseif (e.id == 0x1A and category == 5) or e.id == 0x37 then
+        action_name = resolve_item_name(e.data_modified)
+        is_item = true
     end
-
+    
     local lower_name = str_lower(action_name)
-    for _, keyword in ipairs(EXCLUDED_KEYWORDS) do  -- ipairs: pure sequence table
+    for _, keyword in ipairs(EXCLUDED_KEYWORDS) do
         if str_find(lower_name, keyword) then return end
     end
 
@@ -577,24 +603,29 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
 
     local target_name  = 'Self'
     local target_color = COLOR_PC_SELF
-    if not is_item then
-        local tdata = (target_idx ~= 0 and entity)
-            and parse_target_data(target_idx, packet_target_cache, false, entity, cached_targ)
-            or nil
-        if tdata then
-            target_name  = tdata.display_name
-            target_color = tdata.name_color
+    
+    -- Only attempt to parse if index is not 0 (Self)
+    if target_idx ~= 0 and entity_mgr then
+        -- Retrieve the name directly
+        local name = entity_mgr:GetName(target_idx)
+        if name and name ~= '' then
+            target_name = name
+            
+            -- We can parse the specific target data for colors
+            local tdata = parse_target_data(target_idx, packet_target_cache, false, entity_mgr, cached_targ)
+            if tdata then
+                target_color = tdata.name_color
+            end
         end
-    elseif target_idx ~= 0 and entity then
-        target_name = entity:GetName(target_idx) or 'Unknown'
     end
 
     pending_cast_state.name          = action_name
     pending_cast_state.target_color  = target_color
     pending_cast_state.target_idx    = target_idx
     pending_cast_state.is_item       = is_item
-    pending_cast_state.display_target= (target_name ~= '') and target_name or 'Self'
+    pending_cast_state.display_target= target_name
     pending_cast_state.bar_color_txt = is_item and COLOR_ITEM_TXT or COLOR_CAST_TXT
+    pending_time                     = os_clock()
 end)
 
 ------------------------------------------------------------
@@ -603,21 +634,41 @@ end)
 ashita.events.register('d3d_present', 'targetbar_render', function()
     if not is_ui_visible then return end
 
-    local now      = os_clock()
-    local px       = cfg.pos_x
-    local py       = cfg.pos_y
-    local bw       = cfg.bar_width
-    local bh       = cfg.bar_height
+    local now       = os_clock()
+    local px        = cfg.pos_x
+    local py        = cfg.pos_y
+    local bw        = cfg.bar_width
+    local bh        = cfg.bar_height
     local show_dist = cfg.show_distance
 
     local cb        = cached_cb
     local cast_frac = (cb and cb:GetPercent()) or 0
 
-    -- PROMOTION LOGIC:
-    -- Only promote when cast_frac rises from near-zero (new cast confirmed started).
-    -- A rejected "too soon" attempt sends a packet but never resets the bar to 0,
-    -- so it stays pending harmlessly until a genuine new cast triggers promotion.
-    if pending_cast_state.name ~= '' and last_cast_frac < 0.02 and cast_frac > 0 then
+    if cast_frac > 0 then cb_alive = true end
+
+	if pending_cast_state.name ~= '' then
+        -- Logic: If it's an item, bypass the cast_frac > 0 check.
+        -- If it's a spell, wait for the cast_frac to start moving.
+        local should_trigger = pending_cast_state.is_item or (cast_frac > 0 and (last_cast_frac < CAST_IDLE_EPS or last_cast_frac - cast_frac > CAST_RESTART_DROP))
+        
+        if should_trigger then
+            cast_state.name          = pending_cast_state.name
+            cast_state.target_color  = pending_cast_state.target_color
+            cast_state.target_idx    = pending_cast_state.target_idx
+            cast_state.is_item       = pending_cast_state.is_item
+            cast_state.display_target= pending_cast_state.display_target
+            cast_state.bar_color_txt = pending_cast_state.bar_color_txt
+            cast_state.started       = true
+            cast_state.time_driven   = pending_cast_state.is_item -- Items are purely time-driven
+            cast_state.start_time    = os_clock()
+            cast_state.duration      = pending_cast_state.is_item and 1.5 or 0 -- Items show for 1.5s
+            
+            pending_cast_state.name  = ''
+        end
+    end
+
+    if (not cb_alive) and pending_cast_state.name ~= ''
+    and (now - pending_time) >= FALLBACK_GRACE then
         cast_state.name          = pending_cast_state.name
         cast_state.target_color  = pending_cast_state.target_color
         cast_state.target_idx    = pending_cast_state.target_idx
@@ -625,7 +676,9 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         cast_state.display_target= pending_cast_state.display_target
         cast_state.bar_color_txt = pending_cast_state.bar_color_txt
         cast_state.started       = true
-        cast_state.start_time    = now  -- reuse already-computed now; no extra clock call
+        cast_state.time_driven   = true
+        cast_state.start_time    = pending_time
+        cast_state.duration      = FALLBACK_CAST_TIME
         pending_cast_state.name  = ''
     end
 
@@ -633,25 +686,34 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         cast_state.started = true
     end
 
-    -- 1. Stagnation Check
-    if cast_state.name ~= '' and cast_frac > 0 and cast_frac < 1.0 then
-        if math_abs(cast_frac - last_cast_frac) > 0.001 then
+    local disp_frac = cast_frac
+    if cast_state.time_driven then
+        if cast_frac > 0 then
+            cast_state.time_driven = false
+        else
+            local d = cast_state.duration
+            disp_frac = (d > 0) and math_min(1.0, (now - cast_state.start_time) / d) or 0
+        end
+    end
+
+    if cast_state.name ~= '' and disp_frac > 0 and disp_frac < 1.0 then
+        if math_abs(disp_frac - last_disp_frac) > 0.001 then
             last_frac_change_time = now
         elseif (now - last_frac_change_time > 0.25) then
             reset_cast()
         end
     end
     last_cast_frac = cast_frac
+    last_disp_frac = disp_frac
 
-    -- 2. Cleanup Logic (uses outer now; no shadowing local)
     if cast_state.name ~= '' then
         if (now - cast_state.start_time > 10.0) then
             reset_cast()
         elseif not cast_state.started and (now - cast_state.start_time > 0.5) then
             reset_cast()
-        elseif cast_frac >= 1.0 then
+        elseif disp_frac >= 1.0 then
             if cast_finished_time == 0 then cast_finished_time = now end
-        elseif cast_frac > 0 and cast_frac < 1.0 then
+        elseif disp_frac > 0 and disp_frac < 1.0 then
             cast_finished_time = 0
         elseif cast_finished_time > 0 and (now - cast_finished_time >= FINISH_DELAY) then
             reset_cast()
@@ -688,7 +750,6 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
             last_sub_idx      = sub_idx
             refresh_party_cache(now)
 
-            -- Menu text: only re-process when raw text actually changes
             local raw_text = GetMenuHelpText()
             if raw_text ~= last_raw_menu_text then
                 last_raw_menu_text = raw_text
@@ -697,7 +758,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
                 else
                     local lower_text  = str_lower(raw_text)
                     local is_excluded = false
-                    for _, keyword in ipairs(EXCLUDED_KEYWORDS) do  -- ipairs: pure sequence
+                    for _, keyword in ipairs(EXCLUDED_KEYWORDS) do
                         if str_find(lower_text, keyword) then
                             is_excluded = true
                             break
@@ -721,7 +782,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local current_y = py
 
     if main_data then
-        local force_blue = (sub_data ~= nil) or (last_menu_text ~= nil and last_menu_text ~= '')
+        local force_blue = (last_menu_text ~= '')
         draw_bar(main_data, '##targetbar_main', px, current_y,
             bh, false, force_blue, last_menu_text, bw, show_dist)
         current_y = current_y - bh - SUB_BAR_OFFSET
@@ -729,12 +790,12 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
 
     if sub_data then
         draw_bar(sub_data, '##targetbar_sub', px, current_y,
-            rcache.sub_bh, true, (has_cast and cast_state.target_idx == sub_idx), nil, bw, show_dist)
+            rcache.sub_bh, true, false, nil, bw, show_dist)
         current_y = current_y - rcache.sub_bh - SUB_BAR_OFFSET - 10
     end
 
-    if cast_frac > 0 and cast_frac < 1.0 and has_cast then
-        draw_cast_bar(cast_frac, px, current_y, bw)
+    if disp_frac > 0 and disp_frac < 1.0 and has_cast then
+        draw_cast_bar(disp_frac, px, current_y, bw)
     end
 end)
 

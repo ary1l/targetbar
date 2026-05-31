@@ -623,7 +623,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
             bh, false,
             has_cast and cast_state.target_idx == main_idx,
             sub_data ~= nil, last_menu_text, bw, show_dist)
-        current_y = current_y - bh - SUB_BAR_OFFSET
+        current_y = current_y - bh - SUB_BAR_OFFSET - 5
     end
 
     if sub_data then
@@ -632,7 +632,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
             sub_bh, true,
             has_cast and cast_state.target_idx == sub_idx,
             false, '', bw, show_dist)
-        current_y = current_y - sub_bh - SUB_BAR_OFFSET - 10
+        current_y = current_y - sub_bh - SUB_BAR_OFFSET - 5
     end
 
     if (display_frac > 0 or show_instant) and cast_state.name ~= '' then

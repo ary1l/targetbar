@@ -127,15 +127,18 @@ local cast_state = {
     frac_str=' 0%', last_frac_int=-1,
 }
 
+local sub_target_persistence = 0
+local sub_target_expires     = 0
+
 local main_target_cache   = {}
 local sub_target_cache    = {}
 local packet_target_cache = {}
 local party_id_cache      = {}
+local party_masked_cache  = {}
 
 local last_logic_update     = 0
 local last_main_idx         = 0
 local last_sub_idx          = 0
-local last_sub_idx_for_menu = -1
 local last_scan_time        = 0
 local self_id_cache         = 0
 local self_id_masked        = 0
@@ -143,7 +146,6 @@ local last_menu_text        = ''
 
 local main_data     = nil
 local sub_data      = nil
-local last_cast_h   = 0
 local is_ui_visible = true
 
 local v_pos  = {0, 0}
@@ -222,6 +224,7 @@ local function refresh_party_cache(now)
     if not party then return end
 
     table_clear(party_id_cache)
+    table_clear(party_masked_cache)
 
     local sid = party:GetMemberServerId(0)
     self_id_cache  = sid or 0
@@ -231,6 +234,7 @@ local function refresh_party_cache(now)
             local sId = party:GetMemberServerId(i)
             if sId and sId ~= 0 then
                 party_id_cache[sId] = (i < 6) and 1 or 2
+                party_masked_cache[bit_band(sId, 0xFFFF)] = true
             end
         end
     end
@@ -268,19 +272,14 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         name_color  = COLOR_NPC
         is_real_npc = true
     else
-        local cs           = entity:GetClaimStatus(tIdx)
+        local cs       = entity:GetClaimStatus(tIdx)
         local claim_status = bit_band(cs or 0, 0xFFFF)
         if claim_status == 0 then
             name_color = COLOR_ENEMY
         elseif claim_status == self_id_masked then
             name_color = COLOR_CLAIM
         else
-            local by_group = false
-            for sid_full in pairs(party_id_cache) do
-                if bit_band(sid_full, 0xFFFF) == claim_status then
-                    by_group = true; break
-                end
-            end
+            local by_group = party_masked_cache[claim_status] or false
             name_color = by_group and COLOR_CLAIM or COLOR_STEALTH
         end
     end
@@ -345,11 +344,13 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, fo
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
         if not is_sub then igSetCursorPosY(igGetCursorPosY() + TOP_PADDING) end
 
+        -- 1. Draw Distance (if enabled)
         if show_distance and not data.is_self then
             igTextColored(data.dist_color, data.dist_str)
             igSameLine()
         end
 
+        -- 2. Draw HP Info
         if not data.is_real_npc then
             if data.dead then
                 igTextColored(COLOR_DEAD_TXT, 'DEAD')
@@ -359,13 +360,16 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, has_spell, fo
             igSameLine()
         end
 
-        igTextColored(data.name_color, data.display_name)
-
+        -- 3. Draw Menu Text (Blue Bar Context)
         if force_blue and menu_text and menu_text ~= '' then
-            igSameLine()
             igTextColored(COLOR_CAST_TXT, menu_text)
+            igSameLine()
         end
 
+        -- 4. Draw Target Name
+        igTextColored(data.name_color, data.display_name)
+
+        -- 5. Draw Spell (if active)
         if has_spell then
             igSameLine()
             igTextColored(
@@ -458,7 +462,7 @@ end
 -- ITEM NAME LOOKUP
 ------------------------------------------------------------
 local function resolve_item_name(data)
-    local slot      = unpack('B', data, 15)
+    local slot    = unpack('B', data, 15)
     local container = unpack('B', data, 17)
     local inv       = mm:GetInventory()
     
@@ -488,14 +492,14 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
         if category == 3 then
             local r = rm:GetSpellById(action_id)
             if r then action_name = r.Name[1] or r.Name[0] end
-        elseif category == 7 or category == 9 or category == 14 then
-            local r = rm:GetAbilityById(
-                (category == 7) and action_id or (action_id + 512))
-            if r then action_name = r.Name[1] or r.Name[0] end
-            is_instant = true
         elseif category == 5 then
-            action_name = 'Item'
-            is_item     = true
+            local r = rm:GetItemById(action_id)
+            if r then
+                action_name = r.Name[1] or r.Name[0] or 'Item'
+            else
+                action_name = 'Item'
+            end
+            is_item = true
         end
     else
         local ok, name = pcall(resolve_item_name, e.data_modified)
@@ -520,14 +524,14 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
         target_name = entity:GetName(target_idx) or 'Unknown'
     end
 
-    cast_state.name         = action_name
-    cast_state.cast_string  = '> ' .. action_name
-    cast_state.target       = target_name
-    cast_state.target_color = target_color
-    cast_state.target_idx   = target_idx
-    cast_state.is_item      = is_item
-    cast_state.is_instant   = is_instant
-    cast_state.queued_time  = os_clock()
+    cast_state.name            = action_name
+    cast_state.cast_string     = '> ' .. action_name
+    cast_state.target          = target_name
+    cast_state.target_color    = target_color
+    cast_state.target_idx      = target_idx
+    cast_state.is_item         = is_item
+    cast_state.is_instant      = is_instant
+    cast_state.queued_time     = os_clock()
 end)
 
 ------------------------------------------------------------
@@ -568,11 +572,13 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local show_instant = cast_frac == 0.0 and has_cast
                          and (now - cast_state.queued_time) < INSTANT_FLASH
 
-    if cast_frac == 0.0 and not show_instant then
+    if cast_frac <= 0.0 and not show_instant then
         cast_state.name        = ''
         cast_state.cast_string = ''
+        cast_state.target_idx  = 0
         has_cast               = false
     end
+    
     local display_frac = show_instant and (cast_state.is_instant and 0.0 or 1.0) or cast_frac
     local targ   = mm:GetTarget()
     local entity = mm:GetEntity()
@@ -582,9 +588,18 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
 
     if targ and entity then
         main_idx = targ:GetTargetIndex(0)
-        local sub_raw  = targ:GetIsSubTargetActive()
-        sub_idx  = (sub_raw ~= nil and sub_raw ~= 0 and sub_raw ~= false)
-                          and targ:GetTargetIndex(1) or 0
+        local sub_raw = targ:GetIsSubTargetActive()
+        local current_sub_idx = targ:GetTargetIndex(1)
+        if sub_raw ~= nil and sub_raw ~= 0 and sub_raw ~= false and current_sub_idx ~= 0 then
+            sub_target_persistence = current_sub_idx
+            sub_target_expires = now + 2.0
+        end
+        if now < sub_target_expires then
+            sub_idx = sub_target_persistence
+        else
+            sub_idx = 0
+            sub_target_persistence = 0
+        end
 
         if (now - last_logic_update > UPDATE_INTERVAL)
         or (main_idx ~= last_main_idx)
@@ -594,22 +609,14 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
             last_sub_idx      = sub_idx
             refresh_party_cache(now)
 
+            local raw_text = GetMenuHelpText()
+            last_menu_text = (raw_text ~= '' and raw_text ~= nil) and ('(' .. raw_text .. ')') or ''
+
             main_data = (main_idx ~= 0)
                 and parse_target_data(main_idx, main_target_cache, false, entity, targ) or nil
 
             sub_data  = (sub_idx ~= 0)
                 and parse_target_data(sub_idx, sub_target_cache, true, entity, targ) or nil
-
-            if sub_data then
-                if sub_idx ~= last_sub_idx_for_menu then
-                    last_sub_idx_for_menu = sub_idx
-                    local raw_text = GetMenuHelpText()
-                    last_menu_text = raw_text ~= '' and ('(' .. raw_text .. ')') or ''
-                end
-            else
-                last_sub_idx_for_menu = -1
-                last_menu_text        = ''
-            end
         end
     else
         main_data = nil
@@ -618,12 +625,14 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
 
     local current_y = py
 
-    if main_data then
+	if main_data then
+        local force_blue = (sub_data ~= nil) or (last_menu_text ~= nil and last_menu_text ~= '')
+        local show_spell = (has_cast and cast_state.target_idx == main_idx) and not force_blue
         draw_bar(main_data, '##targetbar_main', px, current_y,
             bh, false,
-            has_cast and cast_state.target_idx == main_idx,
-            sub_data ~= nil, last_menu_text, bw, show_dist)
-        current_y = current_y - bh - SUB_BAR_OFFSET - 5
+            show_spell,
+            force_blue, last_menu_text, bw, show_dist)
+        current_y = current_y - bh - SUB_BAR_OFFSET
     end
 
     if sub_data then
@@ -632,7 +641,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
             sub_bh, true,
             has_cast and cast_state.target_idx == sub_idx,
             false, '', bw, show_dist)
-        current_y = current_y - sub_bh - SUB_BAR_OFFSET - 5
+        current_y = current_y - sub_bh - SUB_BAR_OFFSET - 10
     end
 
     if (display_frac > 0 or show_instant) and cast_state.name ~= '' then

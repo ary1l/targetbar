@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '.9901'
+addon.version = '.9108'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -51,7 +51,6 @@ local math_abs   = math.abs
 local os_clock   = os.clock
 local pcall      = pcall
 local type       = type
-local pairs      = pairs
 local ipairs     = ipairs
 local unpack     = struct.unpack
 local tostring   = tostring
@@ -84,38 +83,46 @@ local PANEL_PADDING   = 4
 local TOP_PADDING     = 2
 local SUB_BAR_OFFSET  = 30
 
+-- Cast-bar promotion thresholds:
+--   CAST_IDLE_EPS    : previous-frame frac below this == bar was idle (rising edge)
+--   CAST_RESTART_DROP: a backwards jump larger than this == a NEW bar replaced a
+--                      finishing/previous one (genuine fresh cast or item use)
 local CAST_IDLE_EPS     = 0.02
 local CAST_RESTART_DROP = 0.05
 
+-- Post-load fallback (only armed until the cast-bar memory proves alive this zone):
 local FALLBACK_GRACE     = 0.30
 local FALLBACK_CAST_TIME = 3.00
 
 ------------------------------------------------------------
 -- COLORS & TABLES
 ------------------------------------------------------------
-local COLOR_PANEL_BG   = igGetColorU32({0.05, 0.05, 0.05, 0.55})
-local COLOR_PANEL_BLUE = igGetColorU32({0.05, 0.05, 0.35, 0.45})
-local COLOR_BAR_BG     = igGetColorU32({0.18, 0.18, 0.18, 0.0})
-local COLOR_BAR_DEAD   = igGetColorU32({0.59, 0.12, 0.12, 1.0})
-local COLOR_CAST       = igGetColorU32({0.20, 0.75, 0.20, 1.0})
-local COLOR_ITEM_BAR   = igGetColorU32({0.72, 0.46, 1.00, 1.0})
-local COLOR_CAST_TXT   = {0.20, 0.75, 0.20, 1.0}
-local COLOR_ITEM_TXT   = {0.72, 0.46, 1.00, 1.0}
-local COLOR_HP_TXT     = {0.80, 0.80, 0.80, 1.0}
-local COLOR_DEAD_TXT   = {0.60, 0.20, 0.20, 1.0}
-local COLOR_DIST_FAR   = {1.00, 1.00, 1.00, 1.0}
-local COLOR_DIST_RED   = {1.0, 0.2, 0.2, 1.0}
-local COLOR_DIST_MID   = {0.00, 0.78, 1.00, 1.0}
-local COLOR_DIST_NEAR  = {0.29, 1.00, 0.29, 1.0}
-local COLOR_NPC        = {0.55, 0.89, 0.52, 1.0}
-local COLOR_PC_SELF    = {0.26, 0.53, 0.96, 1.0}
-local COLOR_PC_PARTY   = {0.27, 0.78, 1.00, 1.0}
-local COLOR_PC_ALLY    = {0.62, 0.89, 1.00, 1.0}
-local COLOR_PC_OTHER   = {0.80, 0.90, 1.00, 1.0}
-local COLOR_ENEMY      = {0.97, 0.93, 0.55, 1.0}
-local COLOR_CLAIM      = {1.00, 0.30, 0.30, 1.0}
-local COLOR_STEALTH    = {0.83, 0.42, 0.83, 1.0}
-local COLOR_ARROW      = {1.00, 1.00, 1.00, 1.0}
+local COLOR_PANEL_BG    = igGetColorU32({0.05, 0.05, 0.05, 0.55})
+local COLOR_PANEL_BLUE  = igGetColorU32({0.05, 0.05, 0.35, 0.45})   -- sub-target MENU panel only (dark navy)
+local COLOR_PANEL_CAST  = igGetColorU32({0.06, 0.11, 0.22, 0.55})   -- cast panel: faint blue (spell)
+local COLOR_PANEL_ITEM  = igGetColorU32({0.15, 0.05, 0.19, 0.55})   -- cast panel: faint purple (item)
+local COLOR_BAR_BG      = igGetColorU32({0.18, 0.18, 0.18, 0.0})
+local COLOR_BAR_DEAD    = igGetColorU32({0.59, 0.12, 0.12, 1.0})
+local COLOR_SPELL_BAR   = igGetColorU32({0.35, 0.62, 1.00, 1.0})    -- spell fill (light blue)
+local COLOR_ITEM_BAR    = igGetColorU32({0.72, 0.46, 1.00, 1.0})    -- item fill (purple)
+local COLOR_SPELL_TXT   = {0.35, 0.62, 1.00, 1.0}                   -- spell text (light blue)
+local COLOR_ITEM_TXT    = {0.72, 0.46, 1.00, 1.0}                   -- item text (purple)
+local COLOR_MENU_TXT    = {0.55, 0.80, 1.00, 1.0}                   -- sub-target menu-help text (light blue)
+local COLOR_HP_TXT      = {0.80, 0.80, 0.80, 1.0}
+local COLOR_DEAD_TXT    = {0.60, 0.20, 0.20, 1.0}
+local COLOR_DIST_FAR    = {1.00, 1.00, 1.00, 1.0}
+local COLOR_DIST_RED    = {1.0, 0.2, 0.2, 1.0}
+local COLOR_DIST_MID    = {0.00, 0.78, 1.00, 1.0}
+local COLOR_DIST_NEAR   = {0.29, 1.00, 0.29, 1.0}
+local COLOR_NPC         = {0.55, 0.89, 0.52, 1.0}
+local COLOR_PC_SELF     = {0.26, 0.53, 0.96, 1.0}
+local COLOR_PC_PARTY    = {0.27, 0.78, 1.00, 1.0}
+local COLOR_PC_ALLY     = {0.62, 0.89, 1.00, 1.0}
+local COLOR_PC_OTHER    = {0.80, 0.90, 1.00, 1.0}
+local COLOR_ENEMY       = {0.97, 0.93, 0.55, 1.0}
+local COLOR_CLAIM       = {1.00, 0.30, 0.30, 1.0}
+local COLOR_STEALTH     = {0.83, 0.42, 0.83, 1.0}
+local COLOR_ARROW       = {1.00, 1.00, 1.00, 1.0}
 
 local HP_GRADIENT = {
     {at=1.00, r=0.12, g=0.55, b=0.12},
@@ -133,14 +140,17 @@ for i = 0, 100 do
     CAST_PERCENT_STR_LUT[i] = ' ' .. tostring(i) .. '%'
 end
 
+-- Menu-help strings to suppress (so the blue menu panel only shows for real
+-- sub-target prompts). Keep these as whole words; bare letters/spaces would match
+-- almost every string and break the blue panel (see the 9901 regression).
 local EXCLUDED_KEYWORDS = {
     'commands', 'magic list', 'abilities', 'items', 'trade', 'conquest',
     'chat', 'status', 'equipment', 'synthesis', 'party', 'search',
-    'linkshell', 'region', 'info', 'map', 'log', 'window', 'besieged',
-    'campaign', 'colonization', 'wide', 'scan', 'communication', 'treasure', 'pool',	
-    'out', 'shut down', 'friend', 'list', 'emote', 'current', 'time',
-    'help', 'desk', 'config', 'markers', 'macropalette', 'set', 'bazaar',
-    'view', 'house', 'key', 'items', 'quests', 'missions', 'k.O',
+    'linkshell', 'region info', 'map', 'log window', 'besieged',
+    'campaign', 'colonization', 'wide scan', 'communication', 'treasure pool',
+    'log out', 'shut down', 'friend list', 'emote list', 'current time',
+    'help desk', 'config', 'markers', 'macropalette', 'set bazaar',
+    'view house', 'key items', 'quests', 'missions', 'k.O',
 }
 
 ------------------------------------------------------------
@@ -149,7 +159,7 @@ local EXCLUDED_KEYWORDS = {
 local cast_state = {
     name='', target_color={1,1,1,1},
     target_idx=0, is_item=false,
-    display_target='Self', bar_color_txt=COLOR_CAST_TXT,
+    display_target='Self', bar_color_txt=COLOR_SPELL_TXT,
     start_time=0, started=false,
     time_driven=false, duration=0
 }
@@ -157,7 +167,7 @@ local cast_state = {
 local pending_cast_state = {
     name='', target_color={1,1,1,1},
     target_idx=0, is_item=false,
-    display_target='Self', bar_color_txt=COLOR_CAST_TXT
+    display_target='Self', bar_color_txt=COLOR_SPELL_TXT
 }
 
 local cast_finished_time     = 0
@@ -316,8 +326,10 @@ end
 ------------------------------------------------------------
 local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, targ)
     if not tIdx or tIdx == 0 then return nil end
+
+    -- Single name fetch, reused for both the validity check and the display string.
     local cur_name = entity:GetName(tIdx) or 'Unknown'
-    local sId = entity:GetServerId(tIdx) or 0
+    local sId      = entity:GetServerId(tIdx) or 0
     if sId == 0 and cur_name == 'Unknown' then return nil end
 
     local hp_pct  = entity:GetHPPercent(tIdx) or 0
@@ -368,7 +380,6 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         is_locked = (lf ~= nil) and (bit_band(lf, 0x01) ~= 0) or false
     end
 
-    local cur_name = entity:GetName(tIdx) or '???'
     if out_cache.raw_name ~= cur_name or out_cache.is_locked ~= is_locked then
         out_cache.raw_name     = cur_name
         out_cache.is_locked    = is_locked
@@ -439,7 +450,7 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, force_blue, m
         end
 
         if force_blue and menu_text and menu_text ~= '' then
-            igTextColored(COLOR_CAST_TXT, menu_text)
+            igTextColored(COLOR_MENU_TXT, menu_text)
             igSameLine()
         end
 
@@ -482,7 +493,10 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y, bar_width)
             local ww, wh = igGetWindowSize()
             v_p1[1], v_p1[2] = wx, wy
             v_p2[1], v_p2[2] = wx + ww, wy + wh
-            dl:AddRectFilled(v_p1, v_p2, COLOR_PANEL_BG, 4.0)
+            -- Cast panel tints to denote spell (green) vs item (purple): the
+            -- "separate spell indicator", kept distinct from the blue menu panel.
+            dl:AddRectFilled(v_p1, v_p2,
+                cast_state.is_item and COLOR_PANEL_ITEM or COLOR_PANEL_CAST, 4.0)
         end
 
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
@@ -512,7 +526,7 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y, bar_width)
             dl:AddRectFilled(v_p1, v_p2, COLOR_BAR_BG)
             if cast_frac > 0 then
                 v_p2[1] = cx + bar_width * cast_frac
-                dl:AddRectFilled(v_p1, v_p2, cast_state.is_item and COLOR_ITEM_BAR or COLOR_CAST)
+                dl:AddRectFilled(v_p1, v_p2, cast_state.is_item and COLOR_ITEM_BAR or COLOR_SPELL_BAR)
             end
         end
     end
@@ -540,13 +554,23 @@ end
 -- PACKETS
 ------------------------------------------------------------
 ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
+    -- Action Message (0x028):
+    --   7  Interrupted -> a cast IN PROGRESS was interrupted: full reset.
+    --   10 Cannot perform, 13 Unable to cast, 14 Silenced, 76/111 Too far, 110 Busy
+    --      -> the ATTEMPT was rejected (often a too-soon press while another action is
+    --         still animating). Clear ONLY the queued attempt so a legitimately
+    --         animating bar is left alone. A genuine mid-cast interrupt that is not
+    --         msg 7 is still caught by the stagnation check (bar stops -> reset).
     if e.id == 0x028 then
         local msg_id = unpack('H', e.data_modified, 0x06)
-        if msg_id == 7 or msg_id == 10 or msg_id == 13 or msg_id == 14
-        or msg_id == 76 or msg_id == 110 or msg_id == 111 then
+        if msg_id == 7 then
             reset_cast()
+        elseif msg_id == 10 or msg_id == 13 or msg_id == 14
+        or msg_id == 76 or msg_id == 110 or msg_id == 111 then
+            pending_cast_state.name = ''
         end
     elseif e.id == 0x00A then
+        -- Zone-in: drop stale state and re-arm the post-load fallback.
         reset_cast()
         cb_alive               = false
         sub_target_persistence = 0
@@ -567,17 +591,15 @@ ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
     end
 end)
 
-
-
 ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
-    
-    local target_idx = unpack('H', e.data_modified, 0x09)
-    local category = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0B) or 0
-    local action_id = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0D) or 0
 
-    local entity_mgr = mm:GetEntity()
-    
+    local target_idx = unpack('H', e.data_modified, 0x09)
+    local category   = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0B) or 0
+    local action_id  = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0D) or 0
+
+    local entity_mgr = mm:GetEntity()   -- fresh fetch (low frequency: own action packets only)
+
     local action_name, is_item = '', false
     if e.id == 0x1A and category == 3 then
         local r = rm:GetSpellById(action_id)
@@ -586,7 +608,7 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
         action_name = resolve_item_name(e.data_modified)
         is_item = true
     end
-    
+
     local lower_name = str_lower(action_name)
     for _, keyword in ipairs(EXCLUDED_KEYWORDS) do
         if str_find(lower_name, keyword) then return end
@@ -596,15 +618,11 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
 
     local target_name  = 'Self'
     local target_color = COLOR_PC_SELF
-
     if target_idx ~= 0 and entity_mgr then
-        local name = entity_mgr:GetName(target_idx)
-        if name and name ~= '' then
-            target_name = name
-            local tdata = parse_target_data(target_idx, packet_target_cache, false, entity_mgr, cached_targ)
-            if tdata then
-                target_color = tdata.name_color
-            end
+        local tdata = parse_target_data(target_idx, packet_target_cache, false, entity_mgr, cached_targ)
+        if tdata then
+            target_name  = tdata.display_name
+            target_color = tdata.name_color
         end
     end
 
@@ -613,7 +631,7 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     pending_cast_state.target_idx    = target_idx
     pending_cast_state.is_item       = is_item
     pending_cast_state.display_target= target_name
-    pending_cast_state.bar_color_txt = is_item and COLOR_ITEM_TXT or COLOR_CAST_TXT
+    pending_cast_state.bar_color_txt = is_item and COLOR_ITEM_TXT or COLOR_SPELL_TXT
     pending_time                     = os_clock()
 end)
 
@@ -631,31 +649,34 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local show_dist = cfg.show_distance
 
     local cb        = cached_cb
-    local cast_frac = (cb and cb:GetPercent()) or 0
+    local cast_frac = (cb and cb:GetPercent()) or 0   -- REAL cast-bar reading
 
     if cast_frac > 0 then cb_alive = true end
 
-	if pending_cast_state.name ~= '' then
-        -- Logic: If it's an item, bypass the cast_frac > 0 check.
-        -- If it's a spell, wait for the cast_frac to start moving.
-        local should_trigger = pending_cast_state.is_item or (cast_frac > 0 and (last_cast_frac < CAST_IDLE_EPS or last_cast_frac - cast_frac > CAST_RESTART_DROP))
-        
-        if should_trigger then
-            cast_state.name          = pending_cast_state.name
-            cast_state.target_color  = pending_cast_state.target_color
-            cast_state.target_idx    = pending_cast_state.target_idx
-            cast_state.is_item       = pending_cast_state.is_item
-            cast_state.display_target= pending_cast_state.display_target
-            cast_state.bar_color_txt = pending_cast_state.bar_color_txt
-            cast_state.started       = true
-            cast_state.time_driven   = pending_cast_state.is_item -- Items are purely time-driven
-            cast_state.start_time    = os_clock()
-            cast_state.duration      = pending_cast_state.is_item and 1.5 or 0 -- Items show for 1.5s
-            
-            pending_cast_state.name  = ''
-        end
+    -- PRIMARY PROMOTION (cb-driven restart detector; spells AND items identical):
+    -- promote pending -> active only when a genuinely new bar starts (rose from idle,
+    -- or jumped backwards as a new bar replaced a finishing one). A too-soon action --
+    -- spell OR item -- never restarts the live bar, so its name stays parked in pending
+    -- and is cleared by the 0x028 handler or overwritten by the next packet_out. This
+    -- is what stops a rejected/too-soon action from hijacking the bar or sticking a
+    -- stale name on it.
+    if pending_cast_state.name ~= '' and cast_frac > 0
+    and (last_cast_frac < CAST_IDLE_EPS or last_cast_frac - cast_frac > CAST_RESTART_DROP) then
+        cast_state.name          = pending_cast_state.name
+        cast_state.target_color  = pending_cast_state.target_color
+        cast_state.target_idx    = pending_cast_state.target_idx
+        cast_state.is_item       = pending_cast_state.is_item
+        cast_state.display_target= pending_cast_state.display_target
+        cast_state.bar_color_txt = pending_cast_state.bar_color_txt
+        cast_state.started       = true
+        cast_state.time_driven   = false
+        cast_state.start_time    = now
+        pending_cast_state.name  = ''
     end
 
+    -- FALLBACK PROMOTION (post-load only): cast-bar memory not proven alive yet this
+    -- zone but an action was accepted -- drive from elapsed time so the bar still shows.
+    -- Fully inert once cb_alive flips true, so normal play is untouched.
     if (not cb_alive) and pending_cast_state.name ~= ''
     and (now - pending_time) >= FALLBACK_GRACE then
         cast_state.name          = pending_cast_state.name
@@ -675,6 +696,8 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         cast_state.started = true
     end
 
+    -- Displayed fraction: real cast bar whenever it reports progress; otherwise, for a
+    -- time-driven fallback cast, estimate from elapsed time (hand control back if cb wakes).
     local disp_frac = cast_frac
     if cast_state.time_driven then
         if cast_frac > 0 then
@@ -685,6 +708,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         end
     end
 
+    -- Stagnation check (on displayed fraction)
     if cast_state.name ~= '' and disp_frac > 0 and disp_frac < 1.0 then
         if math_abs(disp_frac - last_disp_frac) > 0.001 then
             last_frac_change_time = now
@@ -692,9 +716,10 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
             reset_cast()
         end
     end
-    last_cast_frac = cast_frac
-    last_disp_frac = disp_frac
+    last_cast_frac = cast_frac      -- restart-gate history = REAL frac
+    last_disp_frac = disp_frac      -- stagnation history   = displayed frac
 
+    -- Cleanup logic (on displayed fraction)
     if cast_state.name ~= '' then
         if (now - cast_state.start_time > 10.0) then
             reset_cast()
@@ -739,6 +764,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
             last_sub_idx      = sub_idx
             refresh_party_cache(now)
 
+            -- Menu text: only re-process when raw text actually changes
             local raw_text = GetMenuHelpText()
             if raw_text ~= last_raw_menu_text then
                 last_raw_menu_text = raw_text
@@ -771,6 +797,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local current_y = py
 
     if main_data then
+        -- Blue == this bar carries the sub-target menu-help text (e.g. "(Protect III)").
         local force_blue = (last_menu_text ~= '')
         draw_bar(main_data, '##targetbar_main', px, current_y,
             bh, false, force_blue, last_menu_text, bw, show_dist)

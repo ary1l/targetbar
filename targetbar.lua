@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '.9110'
+addon.version = '1.0'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -90,7 +90,40 @@ local SUB_BAR_OFFSET  = 30
 local CAST_IDLE_EPS     = 0.02
 local CAST_RESTART_DROP = 0.05
 
--- Post-load fallback (only armed until the cast-bar memory proves alive this zone):
+--   CAST_TIME_DIVISOR: raw resource CastTime is in client units; divide to get seconds.
+--                      Confirm the right value with /targetbar debug (prints raw values),
+--                      then set this. 4.0 is the common quarter-second encoding.
+local CAST_TIME_DIVISOR = 4.0
+local DEBUG_CASTTIME    = false   -- toggle with: /targetbar debug
+
+-- Candidate field names probed when DEBUG_CASTTIME is on, so we can see which one your
+-- Ashita build actually exposes (resource objects are struct-backed; field reads are
+-- pcall-guarded in case an undefined field errors rather than returning nil).
+local CT_CANDIDATES = { 'CastTime', 'CastDelay', 'RecastDelay', 'ActivationTime', 'UseDelay' }
+
+-- Read a resource's cast time (seconds) from the field named by the divisor convention
+-- above. Returns nil if the field is absent or non-positive (caller then uses the flat
+-- fallback). Edit the field name on the `r.CastTime` line if /targetbar debug shows a
+-- different field carries the value.
+local function resource_cast_seconds(r)
+    if not r then return nil end
+    local ok, ct = pcall(function() return r.CastTime end)
+    if not ok or type(ct) ~= 'number' or ct <= 0 then return nil end
+    return ct / CAST_TIME_DIVISOR
+end
+
+local function debug_dump_resource(label, r)
+    if not DEBUG_CASTTIME then return end
+    if not r then print('[targetbar] ' .. label .. ': <no resource>'); return end
+    local parts = {}
+    for _, f in ipairs(CT_CANDIDATES) do
+        local ok, v = pcall(function() return r[f] end)
+        if ok and v ~= nil then parts[#parts + 1] = f .. '=' .. tostring(v) end
+    end
+    print('[targetbar] ' .. label .. ' '
+        .. (#parts > 0 and table.concat(parts, ' ') or '<no time fields found>'))
+end
+
 local FALLBACK_GRACE     = 0.30
 local FALLBACK_CAST_TIME = 3.00
 
@@ -143,12 +176,12 @@ end
 
 -- Menu-help strings to suppress (so the blue menu panel only shows for real
 -- sub-target prompts). Keep these as whole words; bare letters/spaces would match
--- almost every string and break the blue panel (see the 9901 regression).
+-- almost every string and break the blue panel
 local EXCLUDED_KEYWORDS = {
     'commands', 'magic list', 'abilities', 'items', 'trade', 'conquest',
     'chat', 'status', 'equipment', 'synthesis', 'party', 'search',
     'linkshell', 'region info', 'map', 'log window', 'besieged',
-    'campaign', 'colonization', 'wide scan', 'communication', 'treasure pool',
+    'campaign', 'colonization', 'wide scan', 'communication', 'treasure', 'pool',
     'log out', 'shut down', 'friend list', 'emote list', 'current time',
     'help desk', 'config', 'markers', 'macropalette', 'set bazaar',
     'view house', 'key items', 'quests', 'missions', 'k.O',
@@ -168,7 +201,8 @@ local cast_state = {
 local pending_cast_state = {
     name='', target_color={1,1,1,1},
     target_idx=0, is_item=false,
-    display_target='Self', bar_color_txt=COLOR_SPELL_TXT
+    display_target='Self', bar_color_txt=COLOR_SPELL_TXT,
+    duration=0
 }
 
 local cast_finished_time     = 0
@@ -230,6 +264,16 @@ local function reset_cast()
     last_disp_frac         = 0
     last_frac_change_time  = 0
     pending_cast_state.name = ''
+end
+
+local function promote_pending()
+    cast_state.name          = pending_cast_state.name
+    cast_state.target_color  = pending_cast_state.target_color
+    cast_state.target_idx    = pending_cast_state.target_idx
+    cast_state.is_item       = pending_cast_state.is_item
+    cast_state.display_target= pending_cast_state.display_target
+    cast_state.bar_color_txt = pending_cast_state.bar_color_txt
+    cast_state.started       = true
 end
 
 local function GetMenuHelpText()
@@ -328,7 +372,6 @@ end
 local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, targ)
     if not tIdx or tIdx == 0 then return nil end
 
-    -- Single name fetch, reused for both the validity check and the display string.
     local cur_name = entity:GetName(tIdx) or 'Unknown'
     local sId      = entity:GetServerId(tIdx) or 0
     if sId == 0 and cur_name == 'Unknown' then return nil end
@@ -546,13 +589,13 @@ local function resolve_item_name(data)
     local container = unpack('B', data, 17)
     local inv       = mm:GetInventory()
 
-    if not inv then return 'Item' end
+    if not inv then return 'Item', nil end
     local item = inv:GetContainerItem(container, slot)
 
-    if not item then return 'Item' end
+    if not item then return 'Item', nil end
     local r = rm:GetItemById(item.Id)
 
-    return (r and (r.Name[1] or r.Name[0])) or 'Item'
+    return (r and (r.Name[1] or r.Name[0])) or 'Item', r
 end
 
 ------------------------------------------------------------
@@ -577,7 +620,6 @@ ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
             if cast_state.time_driven then reset_cast() end
         end
     elseif e.id == 0x00A then
-        -- Zone-in: drop stale state and re-arm the post-load fallback.
         reset_cast()
         cb_alive               = false
         sub_target_persistence = 0
@@ -605,15 +647,27 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     local category   = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0B) or 0
     local action_id  = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0D) or 0
 
-    local entity_mgr = mm:GetEntity()   -- fresh fetch (low frequency: own action packets only)
+    local entity_mgr = mm:GetEntity() 
 
-    local action_name, is_item = '', false
+    local action_name, is_item, cast_secs = '', false, nil
     if e.id == 0x1A and category == 3 then
         local r = rm:GetSpellById(action_id)
-        if r then action_name = r.Name[1] or r.Name[0] end
+        if r then
+            action_name = r.Name[1] or r.Name[0]
+            cast_secs   = resource_cast_seconds(r)
+            debug_dump_resource('spell ' .. tostring(action_name), r)
+        end
     elseif (e.id == 0x1A and category == 5) or e.id == 0x37 then
-        action_name = resolve_item_name(e.data_modified)
-        is_item = true
+        local r
+        if e.id == 0x1A then
+            r = rm:GetItemById(action_id)
+            action_name = (r and (r.Name[1] or r.Name[0])) or 'Item'
+        else
+            action_name, r = resolve_item_name(e.data_modified)
+        end
+        is_item   = true
+        cast_secs = resource_cast_seconds(r)
+        debug_dump_resource('item ' .. tostring(action_name), r)
     end
 
     local lower_name = str_lower(action_name)
@@ -639,6 +693,7 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     pending_cast_state.is_item       = is_item
     pending_cast_state.display_target= target_name
     pending_cast_state.bar_color_txt = is_item and COLOR_ITEM_TXT or COLOR_SPELL_TXT
+    pending_cast_state.duration      = cast_secs or 0   -- 0 == use flat fallback duration
     pending_time                     = os_clock()
 end)
 
@@ -658,70 +713,40 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local cb        = cached_cb
     local cast_frac = (cb and cb:GetPercent()) or 0   -- REAL cast-bar reading
 
-    -- NOTE: cb_alive is NOT set from a bare cast_frac > 0 here. Right after a zone/reload
-    -- the cast-bar memory can hold a stale non-zero value for a frame, and latching on
-    -- that would wrongly disarm the post-load fallback before the first real action. It
-    -- is instead set only at genuine proof points (a cb-driven promotion, or cb taking
-    -- over a time-driven bar) -- those require a pending action you actually initiated.
-
-    -- PRIMARY PROMOTION (cb-driven restart detector; spells AND items identical):
-    -- promote pending -> active only when a genuinely new bar starts (rose from idle,
-    -- or jumped backwards as a new bar replaced a finishing one). A too-soon action --
-    -- spell OR item -- never restarts the live bar, so its name stays parked in pending
-    -- and is cleared by the 0x028 handler or overwritten by the next packet_out. This
-    -- is what stops a rejected/too-soon action from hijacking the bar or sticking a
-    -- stale name on it.
     if pending_cast_state.name ~= '' and cast_frac > 0
     and (last_cast_frac < CAST_IDLE_EPS or last_cast_frac - cast_frac > CAST_RESTART_DROP) then
-        cast_state.name          = pending_cast_state.name
-        cast_state.target_color  = pending_cast_state.target_color
-        cast_state.target_idx    = pending_cast_state.target_idx
-        cast_state.is_item       = pending_cast_state.is_item
-        cast_state.display_target= pending_cast_state.display_target
-        cast_state.bar_color_txt = pending_cast_state.bar_color_txt
-        cast_state.started       = true
+        promote_pending()
         cast_state.time_driven   = false
         cast_state.start_time    = now
         pending_cast_state.name  = ''
-        cb_alive                 = true   -- cb just drove a promotion: it's genuinely alive
+        cb_alive                 = true
     end
 
-    -- FALLBACK PROMOTION (post-load only): cast-bar memory not proven alive yet this
-    -- zone but an action was accepted -- drive from elapsed time so the bar still shows.
-    -- Fully inert once cb_alive flips true, so normal play is untouched.
     if (not cb_alive) and pending_cast_state.name ~= ''
     and (now - pending_time) >= FALLBACK_GRACE then
-        cast_state.name          = pending_cast_state.name
-        cast_state.target_color  = pending_cast_state.target_color
-        cast_state.target_idx    = pending_cast_state.target_idx
-        cast_state.is_item       = pending_cast_state.is_item
-        cast_state.display_target= pending_cast_state.display_target
-        cast_state.bar_color_txt = pending_cast_state.bar_color_txt
-        cast_state.started       = true
+        promote_pending()
         cast_state.time_driven   = true
         cast_state.start_time    = pending_time
-        cast_state.duration      = FALLBACK_CAST_TIME
+
+        cast_state.duration      = (pending_cast_state.duration > 0)
+                                   and pending_cast_state.duration or FALLBACK_CAST_TIME
         pending_cast_state.name  = ''
     end
 
     if cast_frac > 0 then
         cast_state.started = true
     end
-
-    -- Displayed fraction: real cast bar whenever it reports progress; otherwise, for a
-    -- time-driven fallback cast, estimate from elapsed time (hand control back if cb wakes).
     local disp_frac = cast_frac
     if cast_state.time_driven then
         if cast_frac > 0 then
             cast_state.time_driven = false
-            cb_alive               = true   -- cb woke and took over: genuinely alive
+            cb_alive               = true
         else
             local d = cast_state.duration
             disp_frac = (d > 0) and math_min(1.0, (now - cast_state.start_time) / d) or 0
         end
     end
 
-    -- Stagnation check (on displayed fraction)
     if cast_state.name ~= '' and disp_frac > 0 and disp_frac < 1.0 then
         if math_abs(disp_frac - last_disp_frac) > 0.001 then
             last_frac_change_time = now
@@ -729,10 +754,9 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
             reset_cast()
         end
     end
-    last_cast_frac = cast_frac      -- restart-gate history = REAL frac
-    last_disp_frac = disp_frac      -- stagnation history   = displayed frac
+    last_cast_frac = cast_frac
+    last_disp_frac = disp_frac      
 
-    -- Cleanup logic (on displayed fraction)
     if cast_state.name ~= '' then
         if (now - cast_state.start_time > 10.0) then
             reset_cast()
@@ -810,14 +834,16 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local current_y = py
 
     if main_data then
-        -- Blue == this bar carries the sub-target menu-help text (e.g. "(Protect III)").
-        local force_blue = (last_menu_text ~= '')
+        -- This bar carries the menu-help text and shows who you're casting on -- it's
+        -- the spell-target bar. Blue whenever you're in a sub-target state
+        local force_blue = (sub_data ~= nil) or (last_menu_text ~= '')
         draw_bar(main_data, '##targetbar_main', px, current_y,
             bh, false, force_blue, last_menu_text, bw, show_dist)
         current_y = current_y - bh - SUB_BAR_OFFSET
     end
 
     if sub_data then
+        -- The locked-anchor bar (sits on top, often your own character)
         draw_bar(sub_data, '##targetbar_sub', px, current_y,
             rcache.sub_bh, true, false, nil, bw, show_dist)
         current_y = current_y - rcache.sub_bh - SUB_BAR_OFFSET - 10
@@ -860,7 +886,11 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
             update_rcache()
             print('[targetbar] ' .. sub .. ': ' .. val)
         end
+    elseif sub == 'debug' then
+        DEBUG_CASTTIME = not DEBUG_CASTTIME
+        print('[targetbar] casttime debug: ' .. (DEBUG_CASTTIME and 'on' or 'off')
+            .. ' (use a spell/item, then read the printed CastTime values)')
     elseif sub == 'help' then
-        print('[targetbar] /targetbar toggle|show|hide|dist|width <n>|height <n>|x <n>|y <n>')
+        print('[targetbar] /targetbar toggle|show|hide|dist|width <n>|height <n>|x <n>|y <n>|debug')
     end
 end)

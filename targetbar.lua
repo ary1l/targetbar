@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '.98'
+addon.version = '.9110'
 addon.desc    = 'Target HP Bar w/ Cast Bar'
 addon.commands = { 'targetbar' }
 
@@ -563,9 +563,10 @@ ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
     --   7  Interrupted -> a cast IN PROGRESS was interrupted: full reset.
     --   10 Cannot perform, 13 Unable to cast, 14 Silenced, 76/111 Too far, 110 Busy
     --      -> the ATTEMPT was rejected (often a too-soon press while another action is
-    --         still animating). Clear ONLY the queued attempt so a legitimately
-    --         animating bar is left alone. A genuine mid-cast interrupt that is not
-    --         msg 7 is still caught by the stagnation check (bar stops -> reset).
+    --         still animating). Clear the queued attempt; also tear down the active bar
+    --         ONLY if it is a time-driven guess (a fallback estimate that the rejection
+    --         proves wrong). A real cb-driven cast is left alone -- a genuine mid-cast
+    --         interrupt for it is caught by the stagnation check (bar stops -> reset).
     if e.id == 0x028 then
         local msg_id = unpack('H', e.data_modified, 0x06)
         if msg_id == 7 then
@@ -573,6 +574,7 @@ ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
         elseif msg_id == 10 or msg_id == 13 or msg_id == 14
         or msg_id == 76 or msg_id == 110 or msg_id == 111 then
             pending_cast_state.name = ''
+            if cast_state.time_driven then reset_cast() end
         end
     elseif e.id == 0x00A then
         -- Zone-in: drop stale state and re-arm the post-load fallback.
@@ -656,7 +658,11 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local cb        = cached_cb
     local cast_frac = (cb and cb:GetPercent()) or 0   -- REAL cast-bar reading
 
-    if cast_frac > 0 then cb_alive = true end
+    -- NOTE: cb_alive is NOT set from a bare cast_frac > 0 here. Right after a zone/reload
+    -- the cast-bar memory can hold a stale non-zero value for a frame, and latching on
+    -- that would wrongly disarm the post-load fallback before the first real action. It
+    -- is instead set only at genuine proof points (a cb-driven promotion, or cb taking
+    -- over a time-driven bar) -- those require a pending action you actually initiated.
 
     -- PRIMARY PROMOTION (cb-driven restart detector; spells AND items identical):
     -- promote pending -> active only when a genuinely new bar starts (rose from idle,
@@ -677,6 +683,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         cast_state.time_driven   = false
         cast_state.start_time    = now
         pending_cast_state.name  = ''
+        cb_alive                 = true   -- cb just drove a promotion: it's genuinely alive
     end
 
     -- FALLBACK PROMOTION (post-load only): cast-bar memory not proven alive yet this
@@ -707,6 +714,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     if cast_state.time_driven then
         if cast_frac > 0 then
             cast_state.time_driven = false
+            cb_alive               = true   -- cb woke and took over: genuinely alive
         else
             local d = cast_state.duration
             disp_frac = (d > 0) and math_min(1.0, (now - cast_state.start_time) / d) or 0

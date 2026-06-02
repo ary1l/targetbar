@@ -133,6 +133,8 @@ local FALLBACK_CAST_TIME = 3.00
 local COLOR_PANEL_BG    = igGetColorU32({0.05, 0.05, 0.05, 0.55})
 local COLOR_PANEL_BLUE  = igGetColorU32({0.05, 0.05, 0.35, 0.45})   -- sub-target MENU panel only (dark navy)
 local COLOR_PANEL_NPC   = igGetColorU32({0.05, 0.13, 0.05, 0.55})   -- real-NPC panel: faint dark green
+
+local COLOR_PANEL_MOB   = igGetColorU32({0.18, 0.05, 0.05, 0.55})   -- monster panel: faint dark red
 local COLOR_PANEL_CAST  = igGetColorU32({0.06, 0.11, 0.22, 0.55})   -- cast panel: faint blue (spell)
 local COLOR_PANEL_ITEM  = igGetColorU32({0.15, 0.05, 0.19, 0.55})   -- cast panel: faint purple (item)
 local COLOR_BAR_BG      = igGetColorU32({0.18, 0.18, 0.18, 0.0})
@@ -473,9 +475,10 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, force_blue, m
             local ww, wh = igGetWindowSize()
             v_p1[1], v_p1[2] = wx, wy
             v_p2[1], v_p2[2] = wx + ww, wy + wh
-            -- Panel precedence: sub-target menu (blue) > real NPC (faint green) > default.
+	-- Panel precedence: sub-target menu (blue) > real NPC (green) > mob (red) > default.
             local panel_col = force_blue and COLOR_PANEL_BLUE
                            or (data.is_real_npc and COLOR_PANEL_NPC)
+                           or (data.is_mob and COLOR_PANEL_MOB)
                            or COLOR_PANEL_BG
             dl:AddRectFilled(v_p1, v_p2, panel_col, 4.0)
         end

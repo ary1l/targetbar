@@ -1012,7 +1012,7 @@ local function parse_pet_data(petIdx, c, entity)
     c.is_self     = false
     return c
 end
-pet.parse = parse_pet_data   -- accessed via the pet table in render (keeps upvalue count down)
+pet.parse = parse_pet_data  
 
 ------------------------------------------------------------
 -- DRAW: HP BAR
@@ -1289,7 +1289,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     -- never been seen (not cb_alive); items ALWAYS use this path after the grace window,
     -- because a quick item-use often doesn't trip the cast bar's rising edge and cb_alive
     -- stays stuck true after the first real cast. This also lets a fresh item supersede a
-    -- stale cast that never cleared.
+    -- stale cast that never cleared (ie: interruption etc)
     if pending_cast_state.name ~= ''
     and (now - pending_time) >= FALLBACK_GRACE
     and (pending_cast_state.is_item or not cb_alive) then

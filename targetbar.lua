@@ -734,7 +734,7 @@ local function draw_drag_handle()
         igSetCursorPosY(igGetCursorPosY() + TOP_PADDING)
         igTextColored(COLOR_HANDLE_TXT, 'targetbar - drag to move  -  re-check Lock when done')
 
-        -- Live-follow: anchor tracks the hand6866le while dragging; persist on release.
+        -- Live-follow: anchor tracks the handle while dragging; persist on release.
         cfg.pos_x = wx
         cfg.pos_y = wy - offset
         if igIsMouseReleased(0) then pcall(settings.save) end

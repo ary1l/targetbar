@@ -247,7 +247,7 @@ local pet           = { data = nil, cache = {}, bar_h = 24 }   -- persistent own
 -- Settings / positioning state
 local show_settings = false
 local settings_open = {true}
-local force_handle  = false 
+local force_handle  = false
 local dbg_on        = false   -- /targetbar debug: overlay raw recast numbers
 
 local v_pos  = {0, 0}
@@ -505,7 +505,7 @@ local menu_cache = {
     cost='', cost_color=COLOR_MENU_READY,
     recast='', recast_color=COLOR_MENU_READY,
     on_cd=false, cd_frac=0,
-    is_charge=false, charges=0, max_charges=0, charge_color=COLOR_MENU_READY, next_str='',
+    is_charge=false, charges=0, max_charges=0, charge_color=COLOR_MENU_READY, charge_str='', next_str='',
     bar_color=COLOR_MENU_BAR_SP,
     dbg='',
 }
@@ -584,6 +584,7 @@ local function rebuild_menu_info()
                 menu_cache.cost         = ''
                 menu_cache.charges      = avail
                 menu_cache.max_charges  = mc
+                menu_cache.charge_str   = avail .. '/' .. mc   -- OPT: build once here, not per-frame in draw
                 menu_cache.charge_color = (avail > 0) and COLOR_MENU_READY or COLOR_MENU_NOTRDY
                 menu_cache.next_str     = (recast_sec > 0) and ('Next ' .. fmt_recast(next_t)) or ''
                 menu_cache.on_cd        = (recast_sec > 0)
@@ -670,7 +671,7 @@ local function draw_menu_panel(px, py)
 
         if menu_cache.is_charge then
             igSameLine()
-            igTextColored(menu_cache.charge_color, menu_cache.charges .. '/' .. menu_cache.max_charges)
+            igTextColored(menu_cache.charge_color, menu_cache.charge_str)
             if menu_cache.next_str ~= '' then
                 igSameLine()
                 igTextColored(COLOR_MENU_NOTRDY, menu_cache.next_str)
@@ -1012,7 +1013,7 @@ local function parse_pet_data(petIdx, c, entity)
     c.is_self     = false
     return c
 end
-pet.parse = parse_pet_data  
+pet.parse = parse_pet_data
 
 ------------------------------------------------------------
 -- DRAW: HP BAR

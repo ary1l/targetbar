@@ -314,10 +314,9 @@ end
 ------------------------------------------------------------
 -- MENU HOVER INFO  (spell / ability / mount under the cursor)
 ------------------------------------------------------------
--- Shows the name, cost, and live recast of the item highlighted in the Magic / Abilities
--- / Mount menu. There is NO Ashita API for "what is hovered in a menu", so the selection
--- read below uses memory signatures + a native FFI call, taken from tirem's XIUI
--- (modules/castcost/data.lua) -- thanks to atom0s for the signatures. The recast VALUES
+-- Shows the name, cost, and live recast of the item highlighted in the Magic / Abilities / Mount menu
+--The selection read below uses memory signatures + a native FFI call, taken from tirem's XIUI (modules/castcost/data.lua)
+-- thanks to atom0s for the signatures. 
 -- reuse mm:GetRecast() (validated at divisor 60), so no extra recast signature is needed.
 
 local sig_ability_sel     = ashita.memory.find('FFXiMain.dll', 0, '81EC80000000568B35????????8BCE8B463050E8', 0x09, 0)

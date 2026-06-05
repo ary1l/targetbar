@@ -13,9 +13,7 @@ local settings = require('settings')
 local mm = AshitaCore:GetMemoryManager()
 local rm = AshitaCore:GetResourceManager()
 
-local pMenuHelp = ashita.memory.find(0, 0, '5350E8????????5F885D??5E5D5BC3A1????????85C0????538BCDE8', 16, 0) 
--- for reading the native UI that tells us which spell/ability that has been selected once in the subtarget menu,
--- so that we can see what spell/ability (and on which target) we will be using. Thank you to Thorny for this memory string information
+local pMenuHelp = ashita.memory.find(0, 0, '5350E8????????5F885D??5E5D5BC3A1????????85C0????538BCDE8', 16, 0)
 
 local mem_read_uint32      = ashita.memory.read_uint32
 local mem_read_int32       = ashita.memory.read_int32
@@ -315,7 +313,8 @@ end
 -- MENU HOVER INFO  (spell / ability / mount under the cursor)
 ------------------------------------------------------------
 -- Shows the name, cost, and live recast of the item highlighted in the Magic / Abilities
--- / Mount menu. The selection read below uses memory signatures + a native FFI call, taken from tirem's XIUI
+-- / Mount menu. There is NO Ashita API for "what is hovered in a menu", so the selection
+-- read below uses memory signatures + a native FFI call, taken from tirem's XIUI
 -- (modules/castcost/data.lua) -- thanks to atom0s for the signatures. The recast VALUES
 -- reuse mm:GetRecast() (validated at divisor 60), so no extra recast signature is needed.
 
@@ -608,8 +607,8 @@ local function rebuild_menu_info()
                 menu_cache.cost = ''
             end
             set_menu_recast(raw, maxs)
-            -- A weapon skill needs >= 1000 TP to fire, so "Ready" is green only when
-            -- TP is at least 1000; below 1000 it stays red
+            -- A weapon skill needs >= 1000 TP to fire, so "Ready" is green only when the
+            -- recast is up AND TP is at least 1000; below 1000 it stays red even off cooldown.
             if isWS and not menu_cache.on_cd then
                 menu_cache.recast_color = (ptp >= 1000) and COLOR_MENU_READY or COLOR_MENU_NOTRDY
             end
@@ -733,6 +732,7 @@ local function draw_drag_handle()
         igSetCursorPosY(igGetCursorPosY() + TOP_PADDING)
         igTextColored(COLOR_HANDLE_TXT, 'targetbar - drag to move  -  /targetbar lock when done')
 
+        -- Live-follow: anchor tracks the handle while dragging; persist on release.
         cfg.pos_x = wx
         cfg.pos_y = wy - offset
         if igIsMouseReleased(0) then pcall(settings.save) end
@@ -1011,7 +1011,7 @@ local function parse_pet_data(petIdx, c, entity)
     c.is_self     = false
     return c
 end
-pet.parse = parse_pet_data 
+pet.parse = parse_pet_data   -- accessed via the pet table in render (keeps upvalue count down)
 
 ------------------------------------------------------------
 -- DRAW: HP BAR
@@ -1463,14 +1463,6 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
     local sub = args[2] and str_lower(args[2]) or nil
     if sub == nil then
         show_settings = not show_settings
-    elseif sub == 'lock' then
-        cfg.locked = true
-        pcall(settings.save)
-        print('[targetbar] position locked')
-    elseif sub == 'unlock' then
-        cfg.locked   = false
-        force_handle = true
-        print('[targetbar] unlocked - drag the handle below the bars, then /targetbar lock')
     elseif sub == 'debug' then
         dbg_on = not dbg_on
         print('[targetbar] recast debug: ' .. (dbg_on and 'on' or 'off'))
@@ -1496,7 +1488,6 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
         end
     elseif sub == 'help' then
         print('[targetbar] /targetbar             open the settings window')
-        print('[targetbar] /targetbar lock        lock UI position')
         print('[targetbar] /targetbar debug       toggle recast debug readout')
         print('[targetbar] /targetbar recast      list every ability on cooldown')
     else

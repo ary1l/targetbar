@@ -730,7 +730,7 @@ local function draw_drag_handle()
         end
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
         igSetCursorPosY(igGetCursorPosY() + TOP_PADDING)
-        igTextColored(COLOR_HANDLE_TXT, 'targetbar - drag to move  -  /targetbar lock when done')
+        igTextColored(COLOR_HANDLE_TXT, 'targetbar - drag to move  -  re-check Lock when done')
 
         -- Live-follow: anchor tracks the handle while dragging; persist on release.
         cfg.pos_x = wx

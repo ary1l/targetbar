@@ -14,6 +14,8 @@ local mm = AshitaCore:GetMemoryManager()
 local rm = AshitaCore:GetResourceManager()
 
 local pMenuHelp = ashita.memory.find(0, 0, '5350E8????????5F885D??5E5D5BC3A1????????85C0????538BCDE8', 16, 0)
+-- for reading the native UI that tells us which spell/ability that has been selected once in the subtarget menu,
+-- so that we can see what spell/ability (and on which target) we will be using. Thank you to Thorny for this memory string information
 
 local mem_read_uint32      = ashita.memory.read_uint32
 local mem_read_int32       = ashita.memory.read_int32
@@ -732,7 +734,7 @@ local function draw_drag_handle()
         igSetCursorPosY(igGetCursorPosY() + TOP_PADDING)
         igTextColored(COLOR_HANDLE_TXT, 'targetbar - drag to move  -  re-check Lock when done')
 
-        -- Live-follow: anchor tracks the handle while dragging; persist on release.
+        -- Live-follow: anchor tracks the hand6866le while dragging; persist on release.
         cfg.pos_x = wx
         cfg.pos_y = wy - offset
         if igIsMouseReleased(0) then pcall(settings.save) end

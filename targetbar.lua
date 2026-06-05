@@ -247,7 +247,7 @@ local pet           = { data = nil, cache = {}, bar_h = 24 }   -- persistent own
 -- Settings / positioning state
 local show_settings = false
 local settings_open = {true}
-local force_handle  = false   -- one-frame request to snap the drag handle to cfg pos
+local force_handle  = false 
 local dbg_on        = false   -- /targetbar debug: overlay raw recast numbers
 
 local v_pos  = {0, 0}
@@ -609,8 +609,8 @@ local function rebuild_menu_info()
                 menu_cache.cost = ''
             end
             set_menu_recast(raw, maxs)
-            -- A weapon skill needs >= 1000 TP to fire, so "Ready" is green only when the
-            -- recast is up AND TP is at least 1000; below 1000 it stays red even off cooldown.
+            -- A weapon skill needs >= 1000 TP to fire, so "Ready" is green only when
+            -- TP is at least 1000; below 1000 it stays red even off cooldown.
             if isWS and not menu_cache.on_cd then
                 menu_cache.recast_color = (ptp >= 1000) and COLOR_MENU_READY or COLOR_MENU_NOTRDY
             end

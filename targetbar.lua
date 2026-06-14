@@ -119,50 +119,51 @@ local RECAST_SENTINEL = 0xFFFF0000
 ------------------------------------------------------------
 -- COLORS & TABLES
 ------------------------------------------------------------
-local COLOR_PANEL_BG    = igGetColorU32({0.05, 0.05, 0.05, 0.55})
-local COLOR_PANEL_BLUE  = igGetColorU32({0.05, 0.05, 0.35, 0.55})
-local COLOR_PANEL_NPC   = igGetColorU32({0.05, 0.13, 0.05, 0.55})
-local COLOR_PANEL_PET   = igGetColorU32({0.03, 0.08, 0.03, 0.60})
-local COLOR_PANEL_MOB   = igGetColorU32({0.18, 0.05, 0.05, 0.55})
-local COLOR_PANEL_CAST  = igGetColorU32({0.06, 0.11, 0.22, 0.55})
-local COLOR_PANEL_ITEM  = igGetColorU32({0.15, 0.05, 0.19, 0.55})
-local COLOR_PANEL_JA    = igGetColorU32({0.03, 0.09, 0.03, 0.55})  
-local COLOR_BAR_BG      = igGetColorU32({0.18, 0.18, 0.18, 0.0})
-local COLOR_BAR_DEAD    = igGetColorU32({0.59, 0.12, 0.12, 1.0})
-local COLOR_SPELL_BAR   = igGetColorU32({0.35, 0.62, 1.00, 1.0})
-local COLOR_ITEM_BAR    = igGetColorU32({0.72, 0.46, 1.00, 1.0})
-local COLOR_SPELL_TXT   = {0.35, 0.62, 1.00, 1.0}
-local COLOR_ITEM_TXT    = {0.72, 0.46, 1.00, 1.0}
-local COLOR_JA_TXT      = {0.45, 0.90, 0.45, 1.0}   
-local COLOR_MENU_TXT    = {0.55, 0.80, 1.00, 1.0}
-local COLOR_HP_TXT      = {0.80, 0.80, 0.80, 1.0}
-local COLOR_DEAD_TXT    = {0.60, 0.20, 0.20, 1.0}
+local C = {
+    PANEL_BG     = igGetColorU32({0.05, 0.05, 0.05, 0.55}),
+    PANEL_BLUE   = igGetColorU32({0.05, 0.05, 0.35, 0.55}),
+    PANEL_NPC    = igGetColorU32({0.05, 0.13, 0.05, 0.55}),
+    PANEL_PET    = igGetColorU32({0.03, 0.08, 0.03, 0.60}),
+    PANEL_MOB    = igGetColorU32({0.18, 0.05, 0.05, 0.55}),
+    PANEL_CAST   = igGetColorU32({0.06, 0.11, 0.22, 0.55}),
+    PANEL_ITEM   = igGetColorU32({0.15, 0.05, 0.19, 0.55}),
+    PANEL_JA     = igGetColorU32({0.03, 0.09, 0.03, 0.55}),
+    BAR_BG       = igGetColorU32({0.18, 0.18, 0.18, 0.0}),
+    BAR_DEAD     = igGetColorU32({0.59, 0.12, 0.12, 1.0}),
+    SPELL_BAR    = igGetColorU32({0.35, 0.62, 1.00, 1.0}),
+    ITEM_BAR     = igGetColorU32({0.72, 0.46, 1.00, 1.0}),
+    SPELL_TXT    = {0.35, 0.62, 1.00, 1.0},
+    ITEM_TXT     = {0.72, 0.46, 1.00, 1.0},
+    JA_TXT       = {0.45, 0.90, 0.45, 1.0},
+    MENU_TXT     = {0.55, 0.80, 1.00, 1.0},
+    HP_TXT       = {0.80, 0.80, 0.80, 1.0},
+    DEAD_TXT     = {0.60, 0.20, 0.20, 1.0},
+    DIST_FAR     = {1.00, 1.00, 1.00, 1.0},
+    DIST_RED     = {1.00, 0.20, 0.20, 1.0},
+    DIST_MID     = {0.20, 0.40, 1.00, 1.0},
+    DIST_NEAR    = {0.20, 1.00, 0.20, 1.0},
+    NPC          = {0.55, 0.89, 0.52, 1.0},
+    PC_SELF      = {0.26, 0.53, 0.96, 1.0},
+    PC_PARTY     = {0.27, 0.78, 1.00, 1.0},
+    PC_ALLY      = {0.62, 0.89, 1.00, 1.0},
+    PC_OTHER     = {0.80, 0.90, 1.00, 1.0},
+    ENEMY        = {0.97, 0.93, 0.55, 1.0},
+    CLAIM        = {1.00, 0.30, 0.30, 1.0},
+    STEALTH      = {0.83, 0.42, 0.83, 1.0},
+    ARROW        = {1.00, 1.00, 1.00, 1.0},
+    PANEL_MENU   = igGetColorU32({0.05, 0.05, 0.05, 0.55}),
+    MENU_NAME    = {0.35, 0.62, 1.00, 1.0},
+    MENU_READY   = {0.32, 0.86, 0.36, 1.0},
+    MENU_NOTRDY  = {0.96, 0.32, 0.32, 1.0},
+    MENU_BAR_SP  = igGetColorU32({0.35, 0.62, 1.00, 1.0}),
+    MENU_BAR_JA  = igGetColorU32({0.20, 0.40, 0.78, 1.0}),
+    HANDLE_BG    = igGetColorU32({0.10, 0.12, 0.34, 0.78}),
+    HANDLE_TXT   = {0.80, 0.86, 1.00, 1.0},
+}
 
-local COLOR_DIST_FAR    = {1.00, 1.00, 1.00, 1.0}
-local COLOR_DIST_RED    = {1.00, 0.20, 0.20, 1.0}
-local COLOR_DIST_MID    = {0.20, 0.40, 1.00, 1.0}
-local COLOR_DIST_NEAR   = {0.20, 1.00, 0.20, 1.0}
 
-local COLOR_NPC         = {0.55, 0.89, 0.52, 1.0}
-local COLOR_PC_SELF     = {0.26, 0.53, 0.96, 1.0}
-local COLOR_PC_PARTY    = {0.27, 0.78, 1.00, 1.0}
-local COLOR_PC_ALLY     = {0.62, 0.89, 1.00, 1.0}
-local COLOR_PC_OTHER    = {0.80, 0.90, 1.00, 1.0}
-local COLOR_ENEMY       = {0.97, 0.93, 0.55, 1.0}
-local COLOR_CLAIM       = {1.00, 0.30, 0.30, 1.0}
-local COLOR_STEALTH     = {0.83, 0.42, 0.83, 1.0}
-local COLOR_ARROW       = {1.00, 1.00, 1.00, 1.0}
 
-local COLOR_PANEL_MENU  = igGetColorU32({0.05, 0.05, 0.05, 0.55})
-local COLOR_MENU_NAME   = {0.35, 0.62, 1.00, 1.0}   
-local COLOR_MENU_READY  = {0.32, 0.86, 0.36, 1.0}   
-local COLOR_MENU_NOTRDY = {0.96, 0.32, 0.32, 1.0}   
-local COLOR_MENU_NEXT   = {0.82, 0.82, 0.82, 1.0}   
-local COLOR_MENU_BAR_SP = igGetColorU32({0.35, 0.62, 1.00, 1.0})  
-local COLOR_MENU_BAR_JA = igGetColorU32({0.20, 0.40, 0.78, 1.0})  
 
-local COLOR_HANDLE_BG   = igGetColorU32({0.10, 0.12, 0.34, 0.78})
-local COLOR_HANDLE_TXT  = {0.80, 0.86, 1.00, 1.0}
 
 local HP_GRADIENT = {
     {at=1.00, r=0.12, g=0.55, b=0.12},
@@ -196,7 +197,7 @@ local EXCLUDED_KEYWORDS = {
 local cast_state = {
     name='', target_color={1,1,1,1},
     target_idx=0, is_item=false,
-    display_target='Self', bar_color_txt=COLOR_SPELL_TXT,
+    display_target='Self', bar_color_txt=C.SPELL_TXT,
     start_time=0, started=false,
     time_driven=false, duration=0
 }
@@ -204,21 +205,21 @@ local cast_state = {
 local pending_cast_state = {
     name='', target_color={1,1,1,1},
     target_idx=0, is_item=false,
-    display_target='Self', bar_color_txt=COLOR_SPELL_TXT,
+    display_target='Self', bar_color_txt=C.SPELL_TXT,
     duration=0
 }
 
 local ja_state = {
     name = '', 
     display_target = 'Self',
-    target_color = COLOR_PC_SELF,
+    target_color = C.PC_SELF,
     expires = 0,
 }
 
 local ja_pending = {
     name = '', 
     display_target = 'Self',
-    target_color = COLOR_PC_SELF,
+    target_color = C.PC_SELF,
     deadline = 0,
 }
 
@@ -281,8 +282,8 @@ end
 ------------------------------------------------------------
 local function is_game_active()
     if not mm then return false end
-    local gs = mm:GetGameState()
-    return (gs == 0)
+    local pl = mm:GetPlayer()                       -- FIX: IMemoryManager has no GetGameState()
+    return pl ~= nil and pl:GetLoginStatus() == 2   -- 2 = logged in / in the game world
 end
 
 local function reset_cast()
@@ -492,12 +493,12 @@ local function get_ability_recast_raw(ab, aid)
 end
 
 local menu_cache = {
-    active=false, name='', name_color=COLOR_MENU_NAME,
-    cost='', cost_color=COLOR_MENU_READY,
-    recast='', recast_color=COLOR_MENU_READY,
+    active=false, name='', name_color=C.MENU_NAME,
+    cost='', cost_color=C.MENU_READY,
+    recast='', recast_color=C.MENU_READY,
     on_cd=false, cd_frac=0,
-    is_charge=false, charge_color=COLOR_MENU_READY, charge_str='', next_str='',
-    bar_color=COLOR_MENU_BAR_SP,
+    is_charge=false, charge_color=C.MENU_READY, charge_str='', next_str='',
+    bar_color=C.MENU_BAR_SP,
     dbg='',
 }
 
@@ -514,7 +515,7 @@ local function set_menu_recast(raw, max_sec)
             last_recast_str_sec = rem_int
         end
         
-        menu_cache.recast_color = COLOR_MENU_NOTRDY
+        menu_cache.recast_color = C.MENU_NOTRDY
         menu_cache.cd_frac      = (max_sec and max_sec > 0)
             and math_max(0.0, math_min(1.0, 1 - rem / max_sec)) or 0
     else
@@ -523,7 +524,7 @@ local function set_menu_recast(raw, max_sec)
             menu_cache.recast = 'Ready'
             last_recast_str_sec = 0
         end
-        menu_cache.recast_color = COLOR_MENU_READY
+        menu_cache.recast_color = C.MENU_READY
         menu_cache.cd_frac      = 1
     end
 end
@@ -545,14 +546,14 @@ local function rebuild_menu_info()
                 menu_cache.name       = sp.Name[1] or sp.Name[0] or 'Spell'
                 last_sid = sid
             end
-            menu_cache.name_color = COLOR_MENU_NAME
-            menu_cache.bar_color  = COLOR_MENU_BAR_SP
+            menu_cache.name_color = C.MENU_NAME
+            menu_cache.bar_color  = C.MENU_BAR_SP
             local mp = sp.ManaCost or 0
             if mp > 0 then
                 menu_cache.cost = 'MP ' .. mp
                 local pmp = 0
                 local pt = mm:GetParty(); if pt then pmp = pt:GetMemberMP(0) or 0 end
-                menu_cache.cost_color = (pmp >= mp) and COLOR_MENU_READY or COLOR_MENU_NOTRDY
+                menu_cache.cost_color = (pmp >= mp) and C.MENU_READY or C.MENU_NOTRDY
             else
                 menu_cache.cost = ''
             end
@@ -575,8 +576,8 @@ local function rebuild_menu_info()
                 menu_cache.name       = ab.Name[1] or ab.Name[0] or 'Ability'
                 last_aid = aid
             end
-            menu_cache.name_color = COLOR_MENU_NAME
-            menu_cache.bar_color  = COLOR_MENU_BAR_JA
+            menu_cache.name_color = C.MENU_NAME
+            menu_cache.bar_color  = C.MENU_BAR_JA
 
             local raw, maxs, tid, c1, c2 = get_ability_recast_raw(ab, aid)
             local recast_sec = (raw and raw > 0) and (raw / 60) or 0
@@ -587,7 +588,7 @@ local function rebuild_menu_info()
                 menu_cache.is_charge    = true
                 menu_cache.cost         = ''
                 menu_cache.charge_str   = avail .. '/' .. mc   
-                menu_cache.charge_color = (avail > 0) and COLOR_MENU_READY or COLOR_MENU_NOTRDY
+                menu_cache.charge_color = (avail > 0) and C.MENU_READY or C.MENU_NOTRDY
                 menu_cache.next_str     = (recast_sec > 0) and ('Next ' .. fmt_recast(next_t)) or ''
                 menu_cache.on_cd        = (recast_sec > 0)
                 menu_cache.cd_frac      = (recast_sec > 0 and ctime > 0)
@@ -602,7 +603,7 @@ local function rebuild_menu_info()
             if isWS then
                 local pt = mm:GetParty(); if pt then ptp = pt:GetMemberTP(0) or 0 end
                 menu_cache.cost       = 'TP ' .. ptp
-                menu_cache.cost_color = (ptp >= 1000) and COLOR_MENU_READY or COLOR_MENU_NOTRDY
+                menu_cache.cost_color = (ptp >= 1000) and C.MENU_READY or C.MENU_NOTRDY
 
                 set_menu_recast(raw, maxs)
                 -- Force the menu action bar off for Weaponskills 
@@ -610,9 +611,9 @@ local function rebuild_menu_info()
                 menu_cache.cd_frac = 0
 
                 if ptp >= 1000 then
-                    menu_cache.recast_color = COLOR_MENU_READY
+                    menu_cache.recast_color = C.MENU_READY
                 else
-                    menu_cache.recast_color = COLOR_MENU_NOTRDY
+                    menu_cache.recast_color = C.MENU_NOTRDY
                 end
             else
                 menu_cache.cost = ''
@@ -631,8 +632,8 @@ local function rebuild_menu_info()
             if nm and nm ~= '' then
                 menu_cache.active     = true
                 menu_cache.name       = nm
-                menu_cache.name_color = COLOR_MENU_NAME
-                menu_cache.bar_color  = COLOR_MENU_BAR_JA
+                menu_cache.name_color = C.MENU_NAME
+                menu_cache.bar_color  = C.MENU_BAR_JA
                 menu_cache.cost       = ''
                 local raw = 0
                 local pl = mm:GetPlayer()
@@ -665,7 +666,7 @@ local function draw_menu_panel(px, py)
         if dl then
             v_p1[1], v_p1[2] = wx, wy
             v_p2[1], v_p2[2] = wx + ww, wy + wh
-            dl:AddRectFilled(v_p1, v_p2, COLOR_PANEL_MENU, 4.0)
+            dl:AddRectFilled(v_p1, v_p2, C.PANEL_MENU, 4.0)
         end
 
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
@@ -678,7 +679,7 @@ local function draw_menu_panel(px, py)
             igTextColored(menu_cache.charge_color, menu_cache.charge_str)
             if menu_cache.next_str ~= '' then
                 igSameLine()
-                igTextColored(COLOR_MENU_NOTRDY, menu_cache.next_str)
+                igTextColored(C.MENU_NOTRDY, menu_cache.next_str)
             end
         else
             if menu_cache.cost ~= '' then
@@ -697,7 +698,7 @@ local function draw_menu_panel(px, py)
             if dl then
                 v_p1[1], v_p1[2] = cx, cy
                 v_p2[1], v_p2[2] = cx + cfg.bar_width, cy + CAST_BAR_HEIGHT
-                dl:AddRectFilled(v_p1, v_p2, COLOR_BAR_BG)
+                dl:AddRectFilled(v_p1, v_p2, C.BAR_BG)
                 v_p2[1] = cx + cfg.bar_width * menu_cache.cd_frac
                 dl:AddRectFilled(v_p1, v_p2, menu_cache.bar_color)
             end
@@ -725,11 +726,11 @@ local function draw_drag_handle()
         if dl then
             v_p1[1], v_p1[2] = wx, wy
             v_p2[1], v_p2[2] = wx + ww, wy + wh
-            dl:AddRectFilled(v_p1, v_p2, COLOR_HANDLE_BG, 4.0)
+            dl:AddRectFilled(v_p1, v_p2, C.HANDLE_BG, 4.0)
         end
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
         igSetCursorPosY(igGetCursorPosY() + TOP_PADDING)
-        igTextColored(COLOR_HANDLE_TXT, 'targetbar - drag to move  -  re-check Lock when done')
+        igTextColored(C.HANDLE_TXT, 'targetbar - drag to move  -  re-check Lock when done')
 
         cfg.pos_x = wx
         cfg.pos_y = wy - offset
@@ -891,27 +892,27 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
     local is_real_npc = false
     if is_pc then
         if sId == self_id_cache then
-            name_color = COLOR_PC_SELF
+            name_color = C.PC_SELF
         elseif party_id_cache[sId] == 1 then
-            name_color = COLOR_PC_PARTY
+            name_color = C.PC_PARTY
         elseif party_id_cache[sId] == 2 then
-            name_color = COLOR_PC_ALLY
+            name_color = C.PC_ALLY
         else
-            name_color = COLOR_PC_OTHER
+            name_color = C.PC_OTHER
         end
     elseif is_npc and not is_mob then
-        name_color  = COLOR_NPC
+        name_color  = C.NPC
         is_real_npc = true
     else
         local cs     = entity:GetClaimStatus(tIdx)
         local claim_status = bit_band(cs or 0, 0xFFFF)
         if claim_status == 0 then
-            name_color = COLOR_ENEMY
+            name_color = C.ENEMY
         elseif claim_status == self_id_masked then
-            name_color = COLOR_CLAIM
+            name_color = C.CLAIM
         else
             local by_group = party_masked_cache[claim_status] or false
-            name_color = by_group and COLOR_CLAIM or COLOR_STEALTH
+            name_color = by_group and C.CLAIM or C.STEALTH
         end
     end
 
@@ -932,7 +933,7 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         out_cache.hp_str    = PERCENT_STR_LUT[hp_pct] or (tostring(hp_pct) .. '%')
         out_cache.dead      = (hp_pct == 0)
         out_cache.hp_frac   = math_max(0.0, math_min(1.0, hp_pct / 100.0))
-        out_cache.bar_color = out_cache.dead and COLOR_BAR_DEAD
+        out_cache.bar_color = out_cache.dead and C.BAR_DEAD
                             or HP_COLOR_LUT[math_max(0, math_min(100, hp_pct))]
     end
 
@@ -942,10 +943,10 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         local dist = math_sqrt(dist_sq)
         out_cache.dist_str     = str_format('%.1f', dist)
         
-        out_cache.dist_color   = (dist < 22.0)  and COLOR_DIST_NEAR
-                               or (dist < 30.0)  and COLOR_DIST_MID
-                               or (dist <= 50.0) and COLOR_DIST_RED
-                               or COLOR_DIST_FAR
+        out_cache.dist_color   = (dist < 22.0)  and C.DIST_NEAR
+                               or (dist < 30.0)  and C.DIST_MID
+                               or (dist <= 50.0) and C.DIST_RED
+                               or C.DIST_FAR
     end
 
     out_cache.name_color  = name_color
@@ -972,7 +973,7 @@ local function parse_pet_data(petIdx, c, entity)
         c.hp_str    = PERCENT_STR_LUT[hp_pct] or (tostring(hp_pct) .. '%')
         c.dead      = (hp_pct == 0)
         c.hp_frac   = math_max(0.0, math_min(1.0, hp_pct / 100.0))
-        c.bar_color = c.dead and COLOR_BAR_DEAD
+        c.bar_color = c.dead and C.BAR_DEAD
                     or HP_COLOR_LUT[math_max(0, math_min(100, hp_pct))]
     end
     if not c.last_dist_sq
@@ -981,12 +982,12 @@ local function parse_pet_data(petIdx, c, entity)
         local dist = math_sqrt(dist_sq)
         c.dist_str     = str_format('%.1f', dist)
         
-        c.dist_color   = (dist < 22.0)  and COLOR_DIST_NEAR
-                       or (dist < 30.0)  and COLOR_DIST_MID
-                       or (dist <= 50.0) and COLOR_DIST_RED
-                       or COLOR_DIST_FAR
+        c.dist_color   = (dist < 22.0)  and C.DIST_NEAR
+                       or (dist < 30.0)  and C.DIST_MID
+                       or (dist <= 50.0) and C.DIST_RED
+                       or C.DIST_FAR
     end
-    c.name_color  = COLOR_PC_PARTY
+    c.name_color  = C.PC_PARTY
     c.is_real_npc = false
     c.is_mob      = false
     c.is_pet      = true
@@ -1015,11 +1016,11 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, force_blue, m
         if dl then
             v_p1[1], v_p1[2] = wx, wy
             v_p2[1], v_p2[2] = wx + ww, wy + wh
-            local panel_col = force_blue and COLOR_PANEL_BLUE
-                           or (data.is_pet and COLOR_PANEL_PET)
-                           or (data.is_real_npc and COLOR_PANEL_NPC)
-                           or (data.is_mob and COLOR_PANEL_MOB)
-                           or COLOR_PANEL_BG
+            local panel_col = force_blue and C.PANEL_BLUE
+                           or (data.is_pet and C.PANEL_PET)
+                           or (data.is_real_npc and C.PANEL_NPC)
+                           or (data.is_mob and C.PANEL_MOB)
+                           or C.PANEL_BG
             dl:AddRectFilled(v_p1, v_p2, panel_col, 4.0)
         end
 
@@ -1033,15 +1034,15 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, force_blue, m
 
         if not data.is_real_npc then
             if data.dead then
-                igTextColored(COLOR_DEAD_TXT, 'DEAD')
+                igTextColored(C.DEAD_TXT, 'DEAD')
             else
-                igTextColored(COLOR_HP_TXT, data.hp_str)
+                igTextColored(C.HP_TXT, data.hp_str)
             end
             igSameLine()
         end
 
         if force_blue and menu_text and menu_text ~= '' then
-            igTextColored(COLOR_MENU_TXT, menu_text)
+            igTextColored(C.MENU_TXT, menu_text)
             igSameLine()
         end
 
@@ -1056,7 +1057,7 @@ local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, force_blue, m
         if dl then
             v_p1[1], v_p1[2] = cx, cy
             v_p2[1], v_p2[2] = cx + bar_width, cy + bar_h
-            dl:AddRectFilled(v_p1, v_p2, COLOR_BAR_BG)
+            dl:AddRectFilled(v_p1, v_p2, C.BAR_BG)
             if not data.is_real_npc and data.hp_frac > 0 then
                 v_p2[1] = cx + bar_width * data.hp_frac
                 dl:AddRectFilled(v_p1, v_p2, data.bar_color)
@@ -1088,7 +1089,7 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y, bar_width)
             v_p1[1], v_p1[2] = wx, wy
             v_p2[1], v_p2[2] = wx + ww, wy + wh
             dl:AddRectFilled(v_p1, v_p2,
-                cast_state.is_item and COLOR_PANEL_ITEM or COLOR_PANEL_CAST, 4.0)
+                cast_state.is_item and C.PANEL_ITEM or C.PANEL_CAST, 4.0)
         end
 
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
@@ -1097,13 +1098,13 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y, bar_width)
         igTextColored(cast_state.bar_color_txt, cast_state.name ~= '' and cast_state.name
                                                 or (cast_state.is_item and 'Item' or 'Action'))
         igSameLine()
-        igTextColored(COLOR_ARROW, ' -> ')
+        igTextColored(C.ARROW, ' -> ')
         igSameLine()
         igTextColored(cast_state.target_color, cast_state.display_target)
 
         if cast_frac > 0 then
             igSameLine()
-            igTextColored(COLOR_HP_TXT, CAST_PERCENT_STR_LUT[math_floor(cast_frac * 100)])
+            igTextColored(C.HP_TXT, CAST_PERCENT_STR_LUT[math_floor(cast_frac * 100)])
         end
 
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
@@ -1115,10 +1116,10 @@ local function draw_cast_bar(cast_frac, pos_x, pos_y, bar_width)
         if dl then
             v_p1[1], v_p1[2] = cx, cy
             v_p2[1], v_p2[2] = cx + bar_width, cy + CAST_BAR_HEIGHT
-            dl:AddRectFilled(v_p1, v_p2, COLOR_BAR_BG)
+            dl:AddRectFilled(v_p1, v_p2, C.BAR_BG)
             if cast_frac > 0 then
                 v_p2[1] = cx + bar_width * cast_frac
-                dl:AddRectFilled(v_p1, v_p2, cast_state.is_item and COLOR_ITEM_BAR or COLOR_SPELL_BAR)
+                dl:AddRectFilled(v_p1, v_p2, cast_state.is_item and C.ITEM_BAR or C.SPELL_BAR)
             end
         end
     end
@@ -1146,15 +1147,15 @@ local function draw_ja_bar(pos_x, pos_y)
         if dl then
             v_p1[1], v_p1[2] = wx, wy
             v_p2[1], v_p2[2] = wx + ww, wy + wh
-            dl:AddRectFilled(v_p1, v_p2, COLOR_PANEL_JA, 4.0)
+            dl:AddRectFilled(v_p1, v_p2, C.PANEL_JA, 4.0)
         end
 
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
         igSetCursorPosY(igGetCursorPosY() + TOP_PADDING)
 
-        igTextColored(COLOR_JA_TXT, ja_state.name)
+        igTextColored(C.JA_TXT, ja_state.name)
         igSameLine()
-        igTextColored(COLOR_ARROW, ' -> ')
+        igTextColored(C.ARROW, ' -> ')
         igSameLine()
         igTextColored(ja_state.target_color, ja_state.display_target)
     end
@@ -1253,7 +1254,7 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
         local r  = rm:GetAbilityById(action_id + 512)
         local nm = r and (r.Name[1] or r.Name[0])
         if nm and nm ~= '' then
-            local t_name, t_color = 'Self', COLOR_PC_SELF
+            local t_name, t_color = 'Self', C.PC_SELF
             if target_idx ~= 0 and entity_mgr then
                 local tdata = parse_target_data(target_idx, packet_target_cache, false, entity_mgr, cached_targ)
                 if tdata then
@@ -1296,7 +1297,7 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if action_name == '' or action_name == 'Gil' then return end
 
     local target_name  = 'Self'
-    local target_color = COLOR_PC_SELF
+    local target_color = C.PC_SELF
     if target_idx ~= 0 and entity_mgr then
         local tdata = parse_target_data(target_idx, packet_target_cache, false, entity_mgr, cached_targ)
         if tdata then
@@ -1310,7 +1311,7 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     pending_cast_state.target_idx    = target_idx
     pending_cast_state.is_item       = is_item
     pending_cast_state.display_target= target_name
-    pending_cast_state.bar_color_txt = is_item and COLOR_ITEM_TXT or COLOR_SPELL_TXT
+    pending_cast_state.bar_color_txt = is_item and C.ITEM_TXT or C.SPELL_TXT
     pending_cast_state.duration      = cast_secs or 0
     pending_time                     = os_clock()
 end)

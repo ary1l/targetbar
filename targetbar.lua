@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '1.7b'
+addon.version = '1.0'
 addon.desc    = 'Target HP Bar w/ Cast Bar & Menu Recast Info'
 addon.commands = { 'targetbar' }
 

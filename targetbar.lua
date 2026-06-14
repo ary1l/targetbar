@@ -54,7 +54,6 @@ local math_abs   = math.abs
 local os_clock   = os.clock
 local pcall      = pcall
 local type       = type
-local ipairs     = ipairs
 local unpack     = struct.unpack
 local tostring   = tostring
 local table_clear= table.clear
@@ -319,7 +318,7 @@ local function GetMenuHelpText()
     if offset ~= 0 then
         local str = mem_read_string(offset, 256)
         if str then
-            local null_pos = str_find(str, '\x00')
+            local null_pos = str_find(str, '\x00', 1, true)   -- OPT: plain find
             if null_pos then return str_sub(str, 1, null_pos - 1) end
             return str
         end
@@ -1290,8 +1289,8 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     end
 
     local lower_name = str_lower(action_name)
-    for _, keyword in ipairs(EXCLUDED_KEYWORDS) do
-        if str_find(lower_name, keyword) then return end
+    for i = 1, #EXCLUDED_KEYWORDS do   -- OPT: numeric for + plain find
+        if str_find(lower_name, EXCLUDED_KEYWORDS[i], 1, true) then return end
     end
 
     if action_name == '' or action_name == 'Gil' then return end
@@ -1439,8 +1438,8 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
                 else
                     local lower_text  = str_lower(raw_text)
                     local is_excluded = false
-                    for _, keyword in ipairs(EXCLUDED_KEYWORDS) do
-                        if str_find(lower_text, keyword) then
+                    for i = 1, #EXCLUDED_KEYWORDS do   -- OPT: numeric for + plain find
+                        if str_find(lower_text, EXCLUDED_KEYWORDS[i], 1, true) then
                             is_excluded = true
                             break
                         end

@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '1.0'
+addon.version = '.9b'
 addon.desc    = 'Target HP Bar w/ Cast Bar & Menu Recast Info'
 addon.commands = { 'targetbar' }
 
@@ -14,8 +14,6 @@ local mm = AshitaCore:GetMemoryManager()
 local rm = AshitaCore:GetResourceManager()
 
 local pMenuHelp = ashita.memory.find(0, 0, '5350E8????????5F885D??5E5D5BC3A1????????85C0????538BCDE8', 16, 0)
--- for reading the native UI that tells us which spell/ability that has been selected once in the subtarget menu,
--- so that we can see what spell/ability (and on which target) we will be using. Thank you to Thorny for this memory string information
 
 local mem_read_uint32      = ashita.memory.read_uint32
 local mem_read_int32       = ashita.memory.read_int32
@@ -64,20 +62,17 @@ local table_clear= table.clear
 ------------------------------------------------------------
 -- WINDOW FLAGS
 ------------------------------------------------------------
--- Bars when not being moved (also derived bars always): fully locked, no mouse.
 local FLAGS_LOCKED = bit_bor(
     ImGuiWindowFlags_NoDecoration, ImGuiWindowFlags_AlwaysAutoResize,
     ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags_NoNav,
     ImGuiWindowFlags_NoBackground, ImGuiWindowFlags_NoMove,
     ImGuiWindowFlags_NoMouseInputs)
 
--- The drag handle (shown only when unlocked): movable + clickable.
 local FLAGS_MOVABLE = bit_bor(
     ImGuiWindowFlags_NoDecoration, ImGuiWindowFlags_AlwaysAutoResize,
     ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags_NoNav,
     ImGuiWindowFlags_NoBackground)
 
--- The /targetbar settings panel: a normal titled, movable, auto-sizing window.
 local FLAGS_SETTINGS = bit_bor(
     ImGuiWindowFlags_NoCollapse, ImGuiWindowFlags_AlwaysAutoResize)
 
@@ -98,18 +93,16 @@ local CAST_BAR_HEIGHT = 8
 local UPDATE_INTERVAL = 0.15
 local SCAN_INTERVAL   = 1.0
 local FINISH_DELAY    = 1.5
-local JA_BAR_LINGER   = 2.0   -- seconds the JA flash bar stays in the stack
+local JA_BAR_LINGER   = 2.0   
 
 local PANEL_PADDING   = 4
 local TOP_PADDING     = 2
 
--- Cast-bar promotion thresholds (see promotion logic in render):
 local CAST_IDLE_EPS     = 0.02
 local CAST_RESTART_DROP = 0.05
 local CAST_RISE_GRACE   = 0.5
 local CAST_TIME_DIVISOR = 4.0
 
--- OPT: module-scope reader so the pcall below doesn't build a capturing closure per call.
 local function read_casttime(r) return r.CastTime end
 
 local function resource_cast_seconds(r)
@@ -121,8 +114,6 @@ end
 
 local FALLBACK_GRACE     = 0.30
 local FALLBACK_CAST_TIME = 3.00
-
--- Live recast timers (GetSpellTimer/GetAbilityTimer) are in 1/60-second units.
 local RECAST_SENTINEL = 0xFFFF0000
 
 ------------------------------------------------------------
@@ -135,21 +126,23 @@ local COLOR_PANEL_PET   = igGetColorU32({0.03, 0.08, 0.03, 0.60})
 local COLOR_PANEL_MOB   = igGetColorU32({0.18, 0.05, 0.05, 0.55})
 local COLOR_PANEL_CAST  = igGetColorU32({0.06, 0.11, 0.22, 0.55})
 local COLOR_PANEL_ITEM  = igGetColorU32({0.15, 0.05, 0.19, 0.55})
-local COLOR_PANEL_JA    = igGetColorU32({0.03, 0.09, 0.03, 0.55})  -- JA flash bar: darker than COLOR_PANEL_NPC
+local COLOR_PANEL_JA    = igGetColorU32({0.03, 0.09, 0.03, 0.55})  
 local COLOR_BAR_BG      = igGetColorU32({0.18, 0.18, 0.18, 0.0})
 local COLOR_BAR_DEAD    = igGetColorU32({0.59, 0.12, 0.12, 1.0})
 local COLOR_SPELL_BAR   = igGetColorU32({0.35, 0.62, 1.00, 1.0})
 local COLOR_ITEM_BAR    = igGetColorU32({0.72, 0.46, 1.00, 1.0})
 local COLOR_SPELL_TXT   = {0.35, 0.62, 1.00, 1.0}
 local COLOR_ITEM_TXT    = {0.72, 0.46, 1.00, 1.0}
-local COLOR_JA_TXT      = {0.45, 0.90, 0.45, 1.0}   -- JA flash bar ability name
+local COLOR_JA_TXT      = {0.45, 0.90, 0.45, 1.0}   
 local COLOR_MENU_TXT    = {0.55, 0.80, 1.00, 1.0}
 local COLOR_HP_TXT      = {0.80, 0.80, 0.80, 1.0}
 local COLOR_DEAD_TXT    = {0.60, 0.20, 0.20, 1.0}
+
 local COLOR_DIST_FAR    = {1.00, 1.00, 1.00, 1.0}
-local COLOR_DIST_RED    = {1.0, 0.2, 0.2, 1.0}
-local COLOR_DIST_MID    = {0.00, 0.78, 1.00, 1.0}
-local COLOR_DIST_NEAR   = {0.29, 1.00, 0.29, 1.0}
+local COLOR_DIST_RED    = {1.00, 0.20, 0.20, 1.0}
+local COLOR_DIST_MID    = {0.20, 0.40, 1.00, 1.0}
+local COLOR_DIST_NEAR   = {0.20, 1.00, 0.20, 1.0}
+
 local COLOR_NPC         = {0.55, 0.89, 0.52, 1.0}
 local COLOR_PC_SELF     = {0.26, 0.53, 0.96, 1.0}
 local COLOR_PC_PARTY    = {0.27, 0.78, 1.00, 1.0}
@@ -160,16 +153,14 @@ local COLOR_CLAIM       = {1.00, 0.30, 0.30, 1.0}
 local COLOR_STEALTH     = {0.83, 0.42, 0.83, 1.0}
 local COLOR_ARROW       = {1.00, 1.00, 1.00, 1.0}
 
--- Menu-hover recast panel
 local COLOR_PANEL_MENU  = igGetColorU32({0.05, 0.05, 0.05, 0.55})
-local COLOR_MENU_NAME   = {0.35, 0.62, 1.00, 1.0}   -- spell / JA / mount name: BLUE (always)
-local COLOR_MENU_READY  = {0.32, 0.86, 0.36, 1.0}   -- ready / affordable / has charges: GREEN
-local COLOR_MENU_NOTRDY = {0.96, 0.32, 0.32, 1.0}   -- on cooldown / unaffordable / no charges: RED
-local COLOR_MENU_NEXT   = {0.82, 0.82, 0.82, 1.0}   -- "Next m:ss" charge timer: neutral grey
-local COLOR_MENU_BAR_SP = igGetColorU32({0.35, 0.62, 1.00, 1.0})  -- spell timer bar: light blue (matches cast bar)
-local COLOR_MENU_BAR_JA = igGetColorU32({0.20, 0.40, 0.78, 1.0})  -- ability / mount timer bar: darker blue
+local COLOR_MENU_NAME   = {0.35, 0.62, 1.00, 1.0}   
+local COLOR_MENU_READY  = {0.32, 0.86, 0.36, 1.0}   
+local COLOR_MENU_NOTRDY = {0.96, 0.32, 0.32, 1.0}   
+local COLOR_MENU_NEXT   = {0.82, 0.82, 0.82, 1.0}   
+local COLOR_MENU_BAR_SP = igGetColorU32({0.35, 0.62, 1.00, 1.0})  
+local COLOR_MENU_BAR_JA = igGetColorU32({0.20, 0.40, 0.78, 1.0})  
 
--- Drag handle (unlocked positioning mode)
 local COLOR_HANDLE_BG   = igGetColorU32({0.10, 0.12, 0.34, 0.78})
 local COLOR_HANDLE_TXT  = {0.80, 0.86, 1.00, 1.0}
 
@@ -217,12 +208,6 @@ local pending_cast_state = {
     duration=0
 }
 
--- JA flash bar: transient "<ability> -> <target>" panel shown when a job ability
--- actually executes. Two stages: the outgoing 0x1A category-9 packet only ARMS
--- ja_pending; the bar becomes visible when the server's incoming 0x028 action
--- packet confirms execution by us (cmd_no 6, 14, or 15 -- plain JAs plus the
--- DNC flourish/dance family, per XiPackets). An attempted-but-rejected action
--- never confirms, so it never shows
 local ja_state = {
     name = '', 
     display_target = 'Self',
@@ -267,13 +252,12 @@ local last_raw_menu_text = ''
 
 local main_data     = nil
 local sub_data      = nil
-local pet           = { data = nil, cache = {}, bar_h = 24 }   -- persistent own-pet HP bar
+local pet           = { data = nil, cache = {}, bar_h = 24 }   
 
--- Settings / positioning state
 local show_settings = false
 local settings_open = {true}
 local force_handle  = false
-local dbg_on        = false   -- /targetbar debug: overlay raw recast numbers
+local dbg_on        = false   
 
 local v_pos  = {0, 0}
 local v_size = {0, 0}
@@ -295,6 +279,12 @@ end
 ------------------------------------------------------------
 -- UTILITY FUNCTIONS
 ------------------------------------------------------------
+local function is_game_active()
+    if not mm then return false end
+    local gs = mm:GetGameState()
+    return (gs == 0)
+end
+
 local function reset_cast()
     cast_state.name        = ''
     cast_state.target_idx  = 0
@@ -337,13 +327,8 @@ local function GetMenuHelpText()
 end
 
 ------------------------------------------------------------
--- MENU HOVER INFO  (spell / ability / mount under the cursor)
+-- MENU HOVER INFO  
 ------------------------------------------------------------
--- Shows the name, cost, and live recast of the item highlighted in the Magic / Abilities / Mount menu
---The selection read below uses memory signatures + a native FFI call, taken from tirem's XIUI (modules/castcost/data.lua)
--- thanks to atom0s for the signatures. 
--- reuse mm:GetRecast() (validated at divisor 60), so no extra recast signature is needed.
-
 local sig_ability_sel     = ashita.memory.find('FFXiMain.dll', 0, '81EC80000000568B35????????8BCE8B463050E8', 0x09, 0)
 local sig_magic_sel       = ashita.memory.find('FFXiMain.dll', 0, '81EC80000000568B35????????578BCE8B7E3057', 0x09, 0)
 local sig_mount_sel       = ashita.memory.find('FFXiMain.dll', 0, '8B4424048B0D????????50E8????????8B0D????????C7411402000000C3', 0x06, 0)
@@ -357,10 +342,6 @@ pcall(function()
     ffi.cdef[[ typedef int32_t (__thiscall* KaListBox_GetItem_f)(uint32_t, int32_t); ]]
 end)
 
--- OPT: ffi.cast builds a fresh cdata object on every call, and the menu poll runs it at
--- 10Hz while a row is selected. Cast the three KaListBox GetItem pointers ONCE at load
--- instead. If the cdef or a cast fails, the fn stays nil and that menu reader is simply
--- inactive, rather than erroring inside the render event like a lazy per-call cast would.
 local function make_getitem(ptr)
     if not ptr or ptr == 0 then return nil end
     local ok, fn = pcall(ffi.cast, 'KaListBox_GetItem_f', ptr)
@@ -372,8 +353,6 @@ local fn_getitem_mount   = make_getitem(sig_getitem_mount)
 
 local MENU_UPDATE = 0.10
 
--- Pet commands (and some merit JAs) share recast-timer ids and may have unreliable
--- resource recast data, so they get an explicit name->timerId map (from XIUI/PetMe).
 local abilityLookup = {
     ['Blood Pact: Rage'] = { timerId = 173, maxRecast = 60 },
     ['Blood Pact: Ward'] = { timerId = 174, maxRecast = 60 },
@@ -395,19 +374,6 @@ local abilityLookup = {
     ['Deus Ex Automata'] = { timerId = 115, maxRecast = 60 },
 }
 
--- ---- Charge-based abilities (stratagems / Ready / Quick Draw) ------------------------
--- These share one recast timer per pool and recharge one charge at a time; the raw timer
--- holds the time to refill ALL missing charges. The per-charge time is NOT configured or
--- approximated: the 0x119 recast packet carries two per-slot modifier fields, exposed by
--- Ashita v4 as IRecast:GetAbilityCalc1 / GetAbilityCalc2, and the client computes its own
--- menu recast display from them (XiPackets, world/server/0x0119):
---   full_refill = (base + Calc2) - band(Calc1, 0x3F) / 60 * (base + Calc2)   [seconds]
---   per_charge  = full_refill / max_charges
--- Calc2 is a flat seconds adjustment (gear / merits / JP gifts arrive here, negative =
--- faster); Calc1's low 6 bits are a proportional reduction in 60ths (observed 0 for these
--- pools, but implemented to match the client exactly). The server rewrites both on every
--- use, so the result always agrees with the native UI. Max charges is the one thing the
--- packet does not carry: fixed per pool (Ready 3, Quick Draw 2), stratagems from SCH level.
 local SCH_JOB_ID = 20
 
 local function get_job_level(job_id)
@@ -418,7 +384,6 @@ local function get_job_level(job_id)
     return 0
 end
 
--- Stratagem charge count follows SCH level breakpoints: 1@10, 2@30, 3@50, 4@70, 5@90.
 local function stratagem_max_charges()
     local lvl = get_job_level(SCH_JOB_ID)
     if lvl < 10 then return 0 end
@@ -427,16 +392,12 @@ local function stratagem_max_charges()
     return c
 end
 
--- Shared charge pools, keyed by recast timer id. base = unmodified FULL-pool refill in
--- seconds (per-charge base x charge count) -- the same constants the client feeds its own
--- recast helpers (240 / 120 / 90).
 local CHARGE_POOLS = {
-    [231] = { base = 240 },             -- SCH stratagems (max charges from SCH level)
-    [195] = { max = 2, base = 120 },    -- COR Quick Draw
-    [102] = { max = 3, base = 90 },     -- BST Ready / Sic
+    [231] = { base = 240 },             
+    [195] = { max = 2, base = 120 },    
+    [102] = { max = 3, base = 90 },     
 }
 
--- -> (max_charges, per_charge_seconds), or nil if this timer isn't a charge pool.
 local function charge_params(timerId, calc1, calc2)
     local pool = timerId and CHARGE_POOLS[timerId]
     if not pool then return nil end
@@ -444,11 +405,10 @@ local function charge_params(timerId, calc1, calc2)
     if mc <= 0 then return nil end
     local full = pool.base + (calc2 or 0)
     full = full - bit_band(calc1 or 0, 0x3F) * full / 60
-    if full < mc then full = mc end   -- sanity clamp: never below 1s per charge
+    if full < mc then full = mc end   
     return mc, full / mc
 end
 
--- recast_sec = time to refill ALL missing charges. Returns charges_available, time_to_next.
 local function compute_charges(recast_sec, max_charges, charge_time)
     if max_charges <= 0 or charge_time <= 0 then return max_charges, 0 end
     local used = math_ceil(recast_sec / charge_time - 1e-6)
@@ -456,7 +416,7 @@ local function compute_charges(recast_sec, max_charges, charge_time)
     local avail = max_charges - used
     local next_t = 0
     if recast_sec > 0 and used > 0 then
-        next_t = recast_sec - (used - 1) * charge_time   -- soonest charge to complete
+        next_t = recast_sec - (used - 1) * charge_time   
         if next_t < 0 then next_t = recast_sec % charge_time end
     end
     return avail, next_t
@@ -485,8 +445,6 @@ local function fmt_recast(s)
     return str_format('%d:%02d', math_floor(n / 60), n % 60)
 end
 
--- Find a recast slot by timer id (handles shared-timer abilities like stratagems / BPs).
--- Returns: raw (1/60s), calc1, calc2 (the slot's server-sent charge modifier fields).
 local function ability_recast_raw_by_timer(timerId)
     if not timerId then return 0, 0, 0 end
     local rc = mm:GetRecast()
@@ -501,9 +459,6 @@ local function ability_recast_raw_by_timer(timerId)
     return 0, 0, 0
 end
 
--- Resolve an ability's live recast. Priority: known pet-command map -> the ability's own
--- RecastTimerId (correct for shared timers like stratagems) -> scan by ability id.
--- Returns: raw (1/60s), max_seconds, timerId, calc1, calc2
 local function get_ability_recast_raw(ab, aid)
     local name = ab.Name[1] or ab.Name[0]
     local lk   = name and abilityLookup[name]
@@ -546,22 +501,34 @@ local menu_cache = {
     dbg='',
 }
 
--- raw = remaining recast 1/60s (0 == ready); max_sec = base recast (progress bar only).
+local last_recast_str_sec = -1
+
 local function set_menu_recast(raw, max_sec)
     if raw and raw > 0 then
         local rem = raw / 60
-        menu_cache.on_cd        = true
-        menu_cache.recast       = fmt_recast(rem)
+        local rem_int = math_floor(rem + 0.5)
+        menu_cache.on_cd = true
+        
+        if rem_int ~= last_recast_str_sec then
+            menu_cache.recast = fmt_recast(rem)
+            last_recast_str_sec = rem_int
+        end
+        
         menu_cache.recast_color = COLOR_MENU_NOTRDY
         menu_cache.cd_frac      = (max_sec and max_sec > 0)
             and math_max(0.0, math_min(1.0, 1 - rem / max_sec)) or 0
     else
-        menu_cache.on_cd        = false
-        menu_cache.recast       = 'Ready'
+        menu_cache.on_cd = false
+        if last_recast_str_sec ~= 0 then
+            menu_cache.recast = 'Ready'
+            last_recast_str_sec = 0
+        end
         menu_cache.recast_color = COLOR_MENU_READY
         menu_cache.cd_frac      = 1
     end
 end
+
+local last_sid, last_aid, last_mid = -2, -2, -2
 
 local function rebuild_menu_info()
     menu_cache.active    = false
@@ -574,7 +541,10 @@ local function rebuild_menu_info()
         local sp = rm:GetSpellById(sid)
         if sp then
             menu_cache.active     = true
-            menu_cache.name       = sp.Name[1] or sp.Name[0] or 'Spell'
+            if sid ~= last_sid then
+                menu_cache.name       = sp.Name[1] or sp.Name[0] or 'Spell'
+                last_sid = sid
+            end
             menu_cache.name_color = COLOR_MENU_NAME
             menu_cache.bar_color  = COLOR_MENU_BAR_SP
             local mp = sp.ManaCost or 0
@@ -590,92 +560,92 @@ local function rebuild_menu_info()
             local rc = mm:GetRecast()
             if rc then local t = rc:GetSpellTimer(sid); raw = (t and t > 0) and t or 0 end
             set_menu_recast(raw, (sp.RecastDelay or 0) / 4)
-            if dbg_on then
-                menu_cache.dbg = str_format('spell id=%d raw=%d (%.1fs) rd=%d mp=%d',
-                    sid, raw, raw/60, sp.RecastDelay or 0, mp)
-            end
             return
         end
     end
+    last_sid = -2
 
     -- Abilities menu ----------------------------------------------------------
     local aid = menu_selected_id(sig_ability_sel, fn_getitem_ability)
     if aid >= 0 then
         local ab = rm:GetAbilityById(aid)
         if ab then
-            local nm = ab.Name[1] or ab.Name[0] or 'Ability'
             menu_cache.active     = true
-            menu_cache.name       = nm
+            if aid ~= last_aid then
+                menu_cache.name       = ab.Name[1] or ab.Name[0] or 'Ability'
+                last_aid = aid
+            end
             menu_cache.name_color = COLOR_MENU_NAME
             menu_cache.bar_color  = COLOR_MENU_BAR_JA
 
             local raw, maxs, tid, c1, c2 = get_ability_recast_raw(ab, aid)
             local recast_sec = (raw and raw > 0) and (raw / 60) or 0
 
-            -- Charge-based ability (stratagems; BST Ready/Sic; COR Quick Draw)
             local mc, ctime = charge_params(tid, c1, c2)
             if mc then
                 local avail, next_t = compute_charges(recast_sec, mc, ctime)
                 menu_cache.is_charge    = true
                 menu_cache.cost         = ''
-                menu_cache.charge_str   = avail .. '/' .. mc   -- OPT: build once here, not per-frame in draw
+                menu_cache.charge_str   = avail .. '/' .. mc   
                 menu_cache.charge_color = (avail > 0) and COLOR_MENU_READY or COLOR_MENU_NOTRDY
                 menu_cache.next_str     = (recast_sec > 0) and ('Next ' .. fmt_recast(next_t)) or ''
                 menu_cache.on_cd        = (recast_sec > 0)
                 menu_cache.cd_frac      = (recast_sec > 0 and ctime > 0)
                     and math_max(0.0, math_min(1.0, 1 - next_t / ctime)) or 0
-                if dbg_on then
-                    menu_cache.dbg = str_format('JA id=%d tid=%d raw=%d (%.1fs) c1=%d c2=%d mc=%d ct=%.1f avail=%d next=%.1f',
-                        aid, tid or -1, raw, recast_sec, c1, c2, mc, ctime, avail, next_t)
-                end
                 return
             end
 
-            -- Regular ability / weapon skill
             menu_cache.is_charge = false
             local isWS = (aid >= 1 and aid <= 255)
             local ptp  = 0
+
             if isWS then
                 local pt = mm:GetParty(); if pt then ptp = pt:GetMemberTP(0) or 0 end
                 menu_cache.cost       = 'TP ' .. ptp
                 menu_cache.cost_color = (ptp >= 1000) and COLOR_MENU_READY or COLOR_MENU_NOTRDY
+
+                set_menu_recast(raw, maxs)
+                -- Force the menu action bar off for Weaponskills 
+                menu_cache.on_cd = false
+                menu_cache.cd_frac = 0
+
+                if ptp >= 1000 then
+                    menu_cache.recast_color = COLOR_MENU_READY
+                else
+                    menu_cache.recast_color = COLOR_MENU_NOTRDY
+                end
             else
                 menu_cache.cost = ''
-            end
-            set_menu_recast(raw, maxs)
-            -- A weapon skill needs >= 1000 TP to fire, so "Ready" is green only when
-            -- TP is at least 1000; below 1000 it stays red even off cooldown.
-            if isWS and not menu_cache.on_cd then
-                menu_cache.recast_color = (ptp >= 1000) and COLOR_MENU_READY or COLOR_MENU_NOTRDY
-            end
-            if dbg_on then
-                menu_cache.dbg = str_format('JA id=%d tid=%d raw=%d (%.1fs) rd=%d',
-                    aid, tid or -1, raw, recast_sec, ab.RecastDelay or 0)
+                set_menu_recast(raw, maxs)
             end
             return
         end
     end
+    last_aid = -2
 
     -- Mount menu --------------------------------------------------------------
     local mid = menu_selected_id(sig_mount_sel, fn_getitem_mount)
     if mid >= 0 then
-        local nm = rm:GetString('mounts.names', mid)
-        if nm and nm ~= '' then
-            menu_cache.active     = true
-            menu_cache.name       = nm
-            menu_cache.name_color = COLOR_MENU_NAME
-            menu_cache.bar_color  = COLOR_MENU_BAR_JA
-            menu_cache.cost       = ''
-            local raw = 0
-            local pl = mm:GetPlayer()
-            if pl then local t = pl:GetMountRecast(); raw = (t and t > 0) and t or 0 end
-            set_menu_recast(raw, 60)
-            if dbg_on then
-                menu_cache.dbg = str_format('mount id=%d raw=%d (%.1fs)', mid, raw, raw/60)
+        if mid ~= last_mid then
+            local nm = rm:GetString('mounts.names', mid)
+            if nm and nm ~= '' then
+                menu_cache.active     = true
+                menu_cache.name       = nm
+                menu_cache.name_color = COLOR_MENU_NAME
+                menu_cache.bar_color  = COLOR_MENU_BAR_JA
+                menu_cache.cost       = ''
+                local raw = 0
+                local pl = mm:GetPlayer()
+                if pl then local t = pl:GetMountRecast(); raw = (t and t > 0) and t or 0 end
+                set_menu_recast(raw, 60)
+                last_mid = mid
             end
-            return
+        else
+            menu_cache.active = true
         end
+        return
     end
+    last_mid = -2
 end
 
 local function draw_menu_panel(px, py)
@@ -732,11 +702,6 @@ local function draw_menu_panel(px, py)
                 dl:AddRectFilled(v_p1, v_p2, menu_cache.bar_color)
             end
         end
-
-        if dbg_on and menu_cache.dbg ~= '' then
-            igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
-            igTextColored(COLOR_MENU_NEXT, menu_cache.dbg)
-        end
     end
     igEnd()
     return win_h
@@ -745,8 +710,6 @@ end
 ------------------------------------------------------------
 -- DRAG HANDLE + SETTINGS PANEL
 ------------------------------------------------------------
--- When unlocked, a small draggable tag sits just below the stack. Dragging it moves the
--- whole UI (it drives cfg.pos_x/pos_y; every bar anchors to those). Locked => no handle.
 local function draw_drag_handle()
     local offset = math_max(cfg.bar_height, 18) + 10
     if force_handle then
@@ -768,7 +731,6 @@ local function draw_drag_handle()
         igSetCursorPosY(igGetCursorPosY() + TOP_PADDING)
         igTextColored(COLOR_HANDLE_TXT, 'targetbar - drag to move  -  re-check Lock when done')
 
-        -- Live-follow: anchor tracks the handle while dragging; persist on release.
         cfg.pos_x = wx
         cfg.pos_y = wy - offset
         if igIsMouseReleased(0) then pcall(settings.save) end
@@ -977,10 +939,12 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
     if not out_cache.last_dist_sq
     or math_abs(out_cache.last_dist_sq - dist_sq) > math_max(1.0, out_cache.last_dist_sq * 0.02) then
         out_cache.last_dist_sq = dist_sq
-        out_cache.dist_str     = str_format('%.1f', math_sqrt(dist_sq))
-        out_cache.dist_color   = (dist_sq <= 480.0)  and COLOR_DIST_NEAR
-                               or (dist_sq <= 900.0)  and COLOR_DIST_MID
-                               or (dist_sq <= 2500.0) and COLOR_DIST_RED
+        local dist = math_sqrt(dist_sq)
+        out_cache.dist_str     = str_format('%.1f', dist)
+        
+        out_cache.dist_color   = (dist < 22.0)  and COLOR_DIST_NEAR
+                               or (dist < 30.0)  and COLOR_DIST_MID
+                               or (dist <= 50.0) and COLOR_DIST_RED
                                or COLOR_DIST_FAR
     end
 
@@ -990,9 +954,6 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
     return out_cache
 end
 
--- Builds bar data for the player's own pet. Unlike a targeted pet (which reads as an NPC
--- and so gets no HP fill), this forces is_real_npc=false so the HP bar always draws, and
--- colors the name as a friendly party-cyan. Keeps its own change-detection cache.
 local function parse_pet_data(petIdx, c, entity)
     if not petIdx or petIdx == 0 then return nil end
     local sId = entity:GetServerId(petIdx) or 0
@@ -1017,10 +978,12 @@ local function parse_pet_data(petIdx, c, entity)
     if not c.last_dist_sq
     or math_abs(c.last_dist_sq - dist_sq) > math_max(1.0, c.last_dist_sq * 0.02) then
         c.last_dist_sq = dist_sq
-        c.dist_str     = str_format('%.1f', math_sqrt(dist_sq))
-        c.dist_color   = (dist_sq <= 480.0)  and COLOR_DIST_NEAR
-                       or (dist_sq <= 900.0)  and COLOR_DIST_MID
-                       or (dist_sq <= 2500.0) and COLOR_DIST_RED
+        local dist = math_sqrt(dist_sq)
+        c.dist_str     = str_format('%.1f', dist)
+        
+        c.dist_color   = (dist < 22.0)  and COLOR_DIST_NEAR
+                       or (dist < 30.0)  and COLOR_DIST_MID
+                       or (dist <= 50.0) and COLOR_DIST_RED
                        or COLOR_DIST_FAR
     end
     c.name_color  = COLOR_PC_PARTY
@@ -1166,8 +1129,6 @@ end
 ------------------------------------------------------------
 -- DRAW: JA FLASH BAR
 ------------------------------------------------------------
--- Transient text-only panel: "<ability> -> <target>". Appears in the stack on JA commit
--- and expires JA_BAR_LINGER seconds later. No progress fill by design.
 local function draw_ja_bar(pos_x, pos_y)
     v_pos[1], v_pos[2] = pos_x, pos_y
     igSetNextWindowPos(v_pos, igCond_Always)
@@ -1223,6 +1184,8 @@ end
 ------------------------------------------------------------
 ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
     if e.id == 0x028 then
+        if e.size < 0x0C then return end 
+        
         local msg_id = unpack('H', e.data_modified, 0x06)
         if msg_id == 7 then
             reset_cast()
@@ -1242,9 +1205,6 @@ ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
                     me = pt and pt:GetMemberServerId(0) or 0
                 end
                 if me ~= 0 and unpack('I', e.data_modified, 0x06) == me then
-                    -- cmd_no = bits 2-5 of the byte at 0x0B; floor(b/4)%16 reads them
-                    -- with the existing math_floor local (no bit.rshift local exists,
-                    -- and the chunk has no room for one -- 199/200)
                     local cmd = math_floor(unpack('B', e.data_modified, 0x0B) / 4) % 16
                     if cmd == 6 or cmd == 14 or cmd == 15 then
                         ja_state.name           = ja_pending.name
@@ -1281,6 +1241,7 @@ end)
 
 ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
+    if e.size < 0x0E then return end 
 
     local target_idx = unpack('H', e.data_modified, 0x09)
     local category   = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0B) or 0
@@ -1303,7 +1264,7 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
             ja_pending.name           = nm
             ja_pending.display_target = t_name
             ja_pending.target_color   = t_color
-            ja_pending.deadline       = os_clock() + 3.0   -- server-confirm window
+            ja_pending.deadline       = os_clock() + 3.0   
         end
         return
     end
@@ -1358,6 +1319,8 @@ end)
 -- RENDER
 ------------------------------------------------------------
 ashita.events.register('d3d_present', 'targetbar_render', function()
+    if not is_game_active() then return end
+
     local now = os_clock()
     local px  = cfg.pos_x
     local bw  = cfg.bar_width
@@ -1491,8 +1454,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
             sub_data  = (sub_idx ~= 0)
                 and parse_target_data(sub_idx, sub_target_cache, true, entity, targ) or nil
 
-            -- Own pet (independent of the current target).
-            local party    = mm:GetParty()
+            local party = mm:GetParty()
             local self_idx = party and party:GetMemberTargetIndex(0) or 0
             local pet_idx  = (cfg.show_pet and self_idx ~= 0)
                 and (entity:GetPetTargetIndex(self_idx) or 0) or 0
@@ -1504,9 +1466,6 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         pet.data  = nil
     end
 
-    -- Build the stack from the anchor upward, each bar flush against the one below it.
-    -- The MAIN target bar is the bottom anchor; everything else stacks upward on top of it. Positions use the
-    -- previous frame's measured heights (cached in rcache / pet.bar_h), stable after a frame.
     local y = cfg.pos_y
 
     if main_data then
@@ -1515,8 +1474,6 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
             bh, false, force_blue, last_menu_text, bw, cfg.show_distance) or rcache.h_main
     end
 
-    -- Own-pet HP bar: persistent, sits directly above the main bar (so the main bar stays
-    -- the bottom anchor). Shown whenever you have a pet, target or not.
     if pet.data then
         y = y - pet.bar_h
         pet.bar_h = draw_bar(pet.data, '##targetbar_pet', px, y,
@@ -1534,7 +1491,6 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
         rcache.h_cast = draw_cast_bar(disp_frac, px, y, bw) or rcache.h_cast
     end
 
-    -- JA flash bar: sits above the cast bar, below the menu panel.
     if cfg.show_jabar and now < ja_state.expires then
         y = y - rcache.h_ja
         rcache.h_ja = draw_ja_bar(px, y) or rcache.h_ja

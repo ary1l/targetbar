@@ -1,6 +1,6 @@
 addon.name    = 'targetbar'
 addon.author  = 'aryl'
-addon.version = '.9b'
+addon.version = '1.0'
 addon.desc    = 'Target HP Bar w/ Cast Bar & Menu Recast Info'
 addon.commands = { 'targetbar' }
 
@@ -92,7 +92,7 @@ local CAST_BAR_HEIGHT = 8
 local UPDATE_INTERVAL = 0.15
 local SCAN_INTERVAL   = 1.0
 local FINISH_DELAY    = 1.5
-local JA_BAR_LINGER   = 2.0   
+local JA_BAR_LINGER   = 2.0
 
 local PANEL_PADDING   = 4
 local TOP_PADDING     = 2
@@ -137,9 +137,8 @@ local C = {
     MENU_TXT     = {0.55, 0.80, 1.00, 1.0},
     HP_TXT       = {0.80, 0.80, 0.80, 1.0},
     DEAD_TXT     = {0.60, 0.20, 0.20, 1.0},
-    DIST_FAR     = {1.00, 1.00, 1.00, 1.0},
     DIST_RED     = {1.00, 0.20, 0.20, 1.0},
-    DIST_MID     = {0.20, 0.40, 1.00, 1.0},
+    DIST_MID     = {1.00, 1.00, 0.20, 1.0},
     DIST_NEAR    = {0.20, 1.00, 0.20, 1.0},
     NPC          = {0.55, 0.89, 0.52, 1.0},
     PC_SELF      = {0.26, 0.53, 0.96, 1.0},
@@ -159,10 +158,6 @@ local C = {
     HANDLE_BG    = igGetColorU32({0.10, 0.12, 0.34, 0.78}),
     HANDLE_TXT   = {0.80, 0.86, 1.00, 1.0},
 }
-
-
-
-
 
 local HP_GRADIENT = {
     {at=1.00, r=0.12, g=0.55, b=0.12},
@@ -209,14 +204,14 @@ local pending_cast_state = {
 }
 
 local ja_state = {
-    name = '', 
+    name = '',
     display_target = 'Self',
     target_color = C.PC_SELF,
     expires = 0,
 }
 
 local ja_pending = {
-    name = '', 
+    name = '',
     display_target = 'Self',
     target_color = C.PC_SELF,
     deadline = 0,
@@ -252,12 +247,11 @@ local last_raw_menu_text = ''
 
 local main_data     = nil
 local sub_data      = nil
-local pet           = { data = nil, cache = {}, bar_h = 24 }   
+local pet           = { data = nil, cache = {}, bar_h = 24 }
 
 local show_settings = false
 local settings_open = {true}
 local force_handle  = false
-local dbg_on        = false   
 
 local v_pos  = {0, 0}
 local v_size = {0, 0}
@@ -327,7 +321,7 @@ local function GetMenuHelpText()
 end
 
 ------------------------------------------------------------
--- MENU HOVER INFO  
+-- MENU HOVER INFO
 ------------------------------------------------------------
 local sig_ability_sel     = ashita.memory.find('FFXiMain.dll', 0, '81EC80000000568B35????????8BCE8B463050E8', 0x09, 0)
 local sig_magic_sel       = ashita.memory.find('FFXiMain.dll', 0, '81EC80000000568B35????????578BCE8B7E3057', 0x09, 0)
@@ -393,9 +387,9 @@ local function stratagem_max_charges()
 end
 
 local CHARGE_POOLS = {
-    [231] = { base = 240 },             
-    [195] = { max = 2, base = 120 },    
-    [102] = { max = 3, base = 90 },     
+    [231] = { base = 240 },
+    [195] = { max = 2, base = 120 },
+    [102] = { max = 3, base = 90 },
 }
 
 local function charge_params(timerId, calc1, calc2)
@@ -405,7 +399,7 @@ local function charge_params(timerId, calc1, calc2)
     if mc <= 0 then return nil end
     local full = pool.base + (calc2 or 0)
     full = full - bit_band(calc1 or 0, 0x3F) * full / 60
-    if full < mc then full = mc end   
+    if full < mc then full = mc end
     return mc, full / mc
 end
 
@@ -416,7 +410,7 @@ local function compute_charges(recast_sec, max_charges, charge_time)
     local avail = max_charges - used
     local next_t = 0
     if recast_sec > 0 and used > 0 then
-        next_t = recast_sec - (used - 1) * charge_time   
+        next_t = recast_sec - (used - 1) * charge_time
         if next_t < 0 then next_t = recast_sec % charge_time end
     end
     return avail, next_t
@@ -498,7 +492,6 @@ local menu_cache = {
     on_cd=false, cd_frac=0,
     is_charge=false, charge_color=C.MENU_READY, charge_str='', next_str='',
     bar_color=C.MENU_BAR_SP,
-    dbg='',
 }
 
 local last_recast_str_sec = -1
@@ -508,12 +501,12 @@ local function set_menu_recast(raw, max_sec)
         local rem = raw / 60
         local rem_int = math_floor(rem + 0.5)
         menu_cache.on_cd = true
-        
+
         if rem_int ~= last_recast_str_sec then
             menu_cache.recast = fmt_recast(rem)
             last_recast_str_sec = rem_int
         end
-        
+
         menu_cache.recast_color = C.MENU_NOTRDY
         menu_cache.cd_frac      = (max_sec and max_sec > 0)
             and math_max(0.0, math_min(1.0, 1 - rem / max_sec)) or 0
@@ -533,7 +526,6 @@ local last_sid, last_aid, last_mid = -2, -2, -2
 local function rebuild_menu_info()
     menu_cache.active    = false
     menu_cache.is_charge = false
-    menu_cache.dbg       = ''
 
     -- Magic menu --------------------------------------------------------------
     local sid = menu_selected_id(sig_magic_sel, fn_getitem_spell)
@@ -586,7 +578,7 @@ local function rebuild_menu_info()
                 local avail, next_t = compute_charges(recast_sec, mc, ctime)
                 menu_cache.is_charge    = true
                 menu_cache.cost         = ''
-                menu_cache.charge_str   = avail .. '/' .. mc   
+                menu_cache.charge_str   = avail .. '/' .. mc
                 menu_cache.charge_color = (avail > 0) and C.MENU_READY or C.MENU_NOTRDY
                 menu_cache.next_str     = (recast_sec > 0) and ('Next ' .. fmt_recast(next_t)) or ''
                 menu_cache.on_cd        = (recast_sec > 0)
@@ -605,7 +597,7 @@ local function rebuild_menu_info()
                 menu_cache.cost_color = (ptp >= 1000) and C.MENU_READY or C.MENU_NOTRDY
 
                 set_menu_recast(raw, maxs)
-                -- Force the menu action bar off for Weaponskills 
+                -- Force the menu action bar off for Weaponskills
                 menu_cache.on_cd = false
                 menu_cache.cd_frac = 0
 
@@ -866,6 +858,26 @@ end
 ------------------------------------------------------------
 -- PARSE TARGET DATA
 ------------------------------------------------------------
+-- OPT 1: single source for distance -> color. NEAR under 22, MID under 30,
+-- RED for everything 30+ (unconditional catch-all, so a pet sitting past 50
+-- stays RED instead of falling through to nil). Was duplicated in both parsers.
+local function dist_color_for(dist)
+    return (dist < 22.0) and C.DIST_NEAR
+        or (dist < 30.0) and C.DIST_MID
+        or C.DIST_RED
+end
+
+-- OPT 2: HP-derived cache fields (str / dead / frac / bar color) were the same
+-- block in both parsers; fold to one writer. Called only when hp_pct changes.
+local function apply_hp(cache, hp_pct)
+    cache.hp_pct    = hp_pct
+    cache.hp_str    = PERCENT_STR_LUT[hp_pct] or (tostring(hp_pct) .. '%')
+    cache.dead      = (hp_pct == 0)
+    cache.hp_frac   = math_max(0.0, math_min(1.0, hp_pct / 100.0))
+    cache.bar_color = cache.dead and C.BAR_DEAD
+                    or HP_COLOR_LUT[math_max(0, math_min(100, hp_pct))]
+end
+
 local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, targ)
     if not tIdx or tIdx == 0 then return nil end
 
@@ -927,25 +939,15 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         out_cache.display_name = is_locked and ('<' .. cur_name .. '>') or cur_name
     end
 
-    if out_cache.hp_pct ~= hp_pct then
-        out_cache.hp_pct    = hp_pct
-        out_cache.hp_str    = PERCENT_STR_LUT[hp_pct] or (tostring(hp_pct) .. '%')
-        out_cache.dead      = (hp_pct == 0)
-        out_cache.hp_frac   = math_max(0.0, math_min(1.0, hp_pct / 100.0))
-        out_cache.bar_color = out_cache.dead and C.BAR_DEAD
-                            or HP_COLOR_LUT[math_max(0, math_min(100, hp_pct))]
-    end
+    if out_cache.hp_pct ~= hp_pct then apply_hp(out_cache, hp_pct) end   -- OPT 2
 
     if not out_cache.last_dist_sq
     or math_abs(out_cache.last_dist_sq - dist_sq) > math_max(1.0, out_cache.last_dist_sq * 0.02) then
         out_cache.last_dist_sq = dist_sq
         local dist = math_sqrt(dist_sq)
         out_cache.dist_str     = str_format('%.1f', dist)
-        
-        out_cache.dist_color   = (dist < 22.0)  and C.DIST_NEAR
-                               or (dist < 30.0)  and C.DIST_MID
-                               or (dist <= 50.0) and C.DIST_RED
-                               or C.DIST_FAR
+
+        out_cache.dist_color   = dist_color_for(dist)   -- OPT 1
     end
 
     out_cache.name_color  = name_color
@@ -967,24 +969,14 @@ local function parse_pet_data(petIdx, c, entity)
         c.raw_name     = nm
         c.display_name = nm
     end
-    if c.hp_pct ~= hp_pct then
-        c.hp_pct    = hp_pct
-        c.hp_str    = PERCENT_STR_LUT[hp_pct] or (tostring(hp_pct) .. '%')
-        c.dead      = (hp_pct == 0)
-        c.hp_frac   = math_max(0.0, math_min(1.0, hp_pct / 100.0))
-        c.bar_color = c.dead and C.BAR_DEAD
-                    or HP_COLOR_LUT[math_max(0, math_min(100, hp_pct))]
-    end
+    if c.hp_pct ~= hp_pct then apply_hp(c, hp_pct) end   -- OPT 2
     if not c.last_dist_sq
     or math_abs(c.last_dist_sq - dist_sq) > math_max(1.0, c.last_dist_sq * 0.02) then
         c.last_dist_sq = dist_sq
         local dist = math_sqrt(dist_sq)
         c.dist_str     = str_format('%.1f', dist)
-        
-        c.dist_color   = (dist < 22.0)  and C.DIST_NEAR
-                       or (dist < 30.0)  and C.DIST_MID
-                       or (dist <= 50.0) and C.DIST_RED
-                       or C.DIST_FAR
+
+        c.dist_color   = dist_color_for(dist)   -- OPT 1
     end
     c.name_color  = C.PC_PARTY
     c.is_real_npc = false
@@ -1184,8 +1176,8 @@ end
 ------------------------------------------------------------
 ashita.events.register('packet_in', 'targetbar_packet_in', function(e)
     if e.id == 0x028 then
-        if e.size < 0x0C then return end 
-        
+        if e.size < 0x0C then return end
+
         local msg_id = unpack('H', e.data_modified, 0x06)
         if msg_id == 7 then
             reset_cast()
@@ -1241,7 +1233,7 @@ end)
 
 ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     if e.id ~= 0x1A and e.id ~= 0x37 then return end
-    if e.size < 0x0E then return end 
+    if e.size < 0x0E then return end
 
     local target_idx = unpack('H', e.data_modified, 0x09)
     local category   = (e.id == 0x1A) and unpack('H', e.data_modified, 0x0B) or 0
@@ -1264,7 +1256,7 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
             ja_pending.name           = nm
             ja_pending.display_target = t_name
             ja_pending.target_color   = t_color
-            ja_pending.deadline       = os_clock() + 3.0   
+            ja_pending.deadline       = os_clock() + 3.0
         end
         return
     end
@@ -1521,37 +1513,8 @@ ashita.events.register('command', 'targetbar_cmd', function(e)
     e.blocked = true
 
     local sub = args[2] and str_lower(args[2]) or nil
-    if sub == nil then
-        show_settings = not show_settings
-    elseif sub == 'debug' then
-        dbg_on = not dbg_on
-        print('[targetbar] recast debug: ' .. (dbg_on and 'on' or 'off'))
-    elseif sub == 'recast' then
-        local rc = mm:GetRecast()
-        if rc then
-            print('[targetbar] --- active ability recasts ---')
-            print('[targetbar] (slot / timer-id / remaining / calc1 / calc2 / name)')
-            local any = false
-            for slot = 0, 31 do
-                local tid = rc:GetAbilityTimerId(slot)
-                local t   = rc:GetAbilityTimer(slot)
-                if t and t > 0 and t < RECAST_SENTINEL then
-                    any = true
-                    local sec = t / 60
-                    local a   = rm:GetAbilityByTimerId(tid)
-                    local nm  = (a and (a.Name[1] or a.Name[0])) or '?'
-                    print(str_format('[targetbar] slot %02d  tid %3d  %s (%5.1fs)  c1=%-3d c2=%-5d %s',
-                        slot, tid, fmt_recast(sec), sec,
-                        rc:GetAbilityCalc1(slot) or 0, rc:GetAbilityCalc2(slot) or 0, nm))
-                end
-            end
-            if not any then print('[targetbar] (nothing on cooldown right now)') end
-            print('[targetbar] --- end ---')
-        end
-    elseif sub == 'help' then
-        print('[targetbar] /targetbar             open the settings window')
-        print('[targetbar] /targetbar debug       toggle recast debug readout')
-        print('[targetbar] /targetbar recast      list every ability on cooldown')
+    if sub == 'help' then
+        print('[targetbar] /targetbar    toggle the settings window')
     else
         show_settings = not show_settings
     end

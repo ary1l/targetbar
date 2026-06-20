@@ -138,7 +138,7 @@ local C = {
     HP_TXT       = {0.80, 0.80, 0.80, 1.0},
     DEAD_TXT     = {0.60, 0.20, 0.20, 1.0},
     DIST_RED     = {1.00, 0.20, 0.20, 1.0},
-    DIST_MID     = {1.00, 1.00, 0.20, 1.0},
+    DIST_MID     = {1.00, 0.475, 0.00, 1.0},
     DIST_NEAR    = {0.20, 1.00, 0.20, 1.0},
     NPC          = {0.55, 0.89, 0.52, 1.0},
     PC_SELF      = {0.26, 0.53, 0.96, 1.0},
@@ -229,6 +229,13 @@ local sub_target_persistence = 0
 local sub_target_expires     = 0
 
 local last_menu_update = 0
+
+-- Mounts expose no live recast in client memory (snapshot static, recast list
+-- empty, /recast shows nothing). The recast is summon-anchored at 60s, so it is
+-- timed client-side: cd_until is armed on the Mount status (buff 252) 0->1 edge.
+-- id starts at -1 ('not yet sampled') so reloading while already mounted records
+-- the baseline instead of firing a false summon and a phantom 1:00.
+local mount = { id = -1, cd_until = 0, chk = 0, recast = 60.0, interval = 0.20 }
 
 local main_target_cache   = {}
 local sub_target_cache    = {}
@@ -618,23 +625,25 @@ local function rebuild_menu_info()
     -- Mount menu --------------------------------------------------------------
     local mid = menu_selected_id(sig_mount_sel, fn_getitem_mount)
     if mid >= 0 then
+        menu_cache.active = true
+        -- FIX: read the recast every rebuild. It was trapped in the mid-change
+        -- gate, so the shared mount cooldown was sampled once on hover then froze.
         if mid ~= last_mid then
             local nm = rm:GetString('mounts.names', mid)
-            if nm and nm ~= '' then
-                menu_cache.active     = true
-                menu_cache.name       = nm
-                menu_cache.name_color = C.MENU_NAME
-                menu_cache.bar_color  = C.MENU_BAR_JA
-                menu_cache.cost       = ''
-                local raw = 0
-                local pl = mm:GetPlayer()
-                if pl then local t = pl:GetMountRecast(); raw = (t and t > 0) and t or 0 end
-                set_menu_recast(raw, 60)
-                last_mid = mid
-            end
-        else
-            menu_cache.active = true
+            menu_cache.name = (nm and nm ~= '') and nm or 'Mount'
+            last_mid = mid
         end
+        menu_cache.name_color = C.MENU_NAME
+        menu_cache.bar_color  = C.MENU_BAR_JA
+        menu_cache.cost       = ''
+        -- Mount recast is timed client-side (summon-anchored 60s; see the
+        -- mount table). Show the remaining cooldown the render loop computed.
+        local raw  = 0
+        local rnow = os_clock()
+        if mount.cd_until > rnow then
+            raw = (mount.cd_until - rnow) * 60   -- seconds left -> 1/60s for set_menu_recast
+        end
+        set_menu_recast(raw, 60)
         return
     end
     last_mid = -2
@@ -1317,6 +1326,32 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
     local px  = cfg.pos_x
     local bw  = cfg.bar_width
     local bh  = cfg.bar_height
+
+-- Mount recast: arm the summon-anchored timer on the mount status 0->1 edge (Buff ID 252).
+    if now - mount.chk >= mount.interval then
+        mount.chk = now
+        local mpl = mm:GetPlayer()
+        if mpl and mpl:GetIsZoning() == 0 then
+            local is_mounted = false
+            local buffs = mpl:GetBuffs()
+            
+            -- Check the player's active buffs for the Mount status
+            if buffs then
+                for i = 0, 31 do
+                    if buffs[i] == 252 then
+                        is_mounted = true
+                        break
+                    end
+                end
+            end
+            
+            local cur = is_mounted and 1 or 0
+            if cur ~= 0 and mount.id == 0 then
+                mount.cd_until = now + mount.recast
+            end
+            mount.id = cur
+        end
+    end
 
     local cb        = cached_cb
     local cast_frac = (cb and cb:GetPercent()) or 0

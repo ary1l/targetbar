@@ -319,7 +319,7 @@ local function GetMenuHelpText()
     if offset ~= 0 then
         local str = mem_read_string(offset, 256)
         if str then
-            local null_pos = str_find(str, '\x00', 1, true)   -- OPT: plain find
+            local null_pos = str_find(str, '\x00', 1, true)
             if null_pos then return str_sub(str, 1, null_pos - 1) end
             return str
         end
@@ -330,27 +330,32 @@ end
 ------------------------------------------------------------
 -- MENU HOVER INFO
 ------------------------------------------------------------
-local sig_ability_sel     = ashita.memory.find('FFXiMain.dll', 0, '81EC80000000568B35????????8BCE8B463050E8', 0x09, 0)
-local sig_magic_sel       = ashita.memory.find('FFXiMain.dll', 0, '81EC80000000568B35????????578BCE8B7E3057', 0x09, 0)
-local sig_mount_sel       = ashita.memory.find('FFXiMain.dll', 0, '8B4424048B0D????????50E8????????8B0D????????C7411402000000C3', 0x06, 0)
-local sig_getitem_ability = ashita.memory.find('FFXiMain.dll', 0, '8B44240485C07C??3B41447D??8B49208D04C185C075??83C8FFC204008B108B', 0, 0)
-local sig_getitem_spell   = ashita.memory.find('FFXiMain.dll', 0, '8B44240485C07C??3B41447D??8B49208D04C185C075??83C8FFC204008B108B', 0, 1)
-local sig_getitem_mount   = ashita.memory.find('FFXiMain.dll', 0, '8B44240485C07C??3B41447D??8B49208D04C185C075??83C8FFC204008B00C20400', 0, 0)
+-- (only rebuild_menu_info reads msig, at <=10Hz when a menu is open).
+local msig = {}
+do
+    msig.magic   = ashita.memory.find('FFXiMain.dll', 0, '81EC80000000568B35????????578BCE8B7E3057', 0x09, 0)
+    msig.ability = ashita.memory.find('FFXiMain.dll', 0, '81EC80000000568B35????????8BCE8B463050E8', 0x09, 0)
+    msig.mount   = ashita.memory.find('FFXiMain.dll', 0, '8B4424048B0D????????50E8????????8B0D????????C7411402000000C3', 0x06, 0)
 
-local sig_spell_getitem = (sig_getitem_spell ~= 0) and sig_getitem_spell or sig_getitem_ability
+    local sig_getitem_ability = ashita.memory.find('FFXiMain.dll', 0, '8B44240485C07C??3B41447D??8B49208D04C185C075??83C8FFC204008B108B', 0, 0)
+    local sig_getitem_spell   = ashita.memory.find('FFXiMain.dll', 0, '8B44240485C07C??3B41447D??8B49208D04C185C075??83C8FFC204008B108B', 0, 1)
+    local sig_getitem_mount   = ashita.memory.find('FFXiMain.dll', 0, '8B44240485C07C??3B41447D??8B49208D04C185C075??83C8FFC204008B00C20400', 0, 0)
+    local sig_spell_getitem   = (sig_getitem_spell ~= 0) and sig_getitem_spell or sig_getitem_ability
 
-pcall(function()
-    ffi.cdef[[ typedef int32_t (__thiscall* KaListBox_GetItem_f)(uint32_t, int32_t); ]]
-end)
+    pcall(function()
+        ffi.cdef[[ typedef int32_t (__thiscall* KaListBox_GetItem_f)(uint32_t, int32_t); ]]
+    end)
 
-local function make_getitem(ptr)
-    if not ptr or ptr == 0 then return nil end
-    local ok, fn = pcall(ffi.cast, 'KaListBox_GetItem_f', ptr)
-    return (ok and fn) or nil
+    local function make_getitem(ptr)
+        if not ptr or ptr == 0 then return nil end
+        local ok, fn = pcall(ffi.cast, 'KaListBox_GetItem_f', ptr)
+        return (ok and fn) or nil
+    end
+
+    msig.fn_ability = make_getitem(sig_getitem_ability)
+    msig.fn_spell   = make_getitem(sig_spell_getitem)
+    msig.fn_mount   = make_getitem(sig_getitem_mount)
 end
-local fn_getitem_ability = make_getitem(sig_getitem_ability)
-local fn_getitem_spell   = make_getitem(sig_spell_getitem)
-local fn_getitem_mount   = make_getitem(sig_getitem_mount)
 
 local MENU_UPDATE = 0.10
 
@@ -499,9 +504,8 @@ local menu_cache = {
     on_cd=false, cd_frac=0,
     is_charge=false, charge_color=C.MENU_READY, charge_str='', next_str='',
     bar_color=C.MENU_BAR_SP,
+    last_recast_str_sec=-1, last_sid=-2, last_aid=-2, last_mid=-2,
 }
-
-local last_recast_str_sec = -1
 
 local function set_menu_recast(raw, max_sec)
     if raw and raw > 0 then
@@ -509,9 +513,9 @@ local function set_menu_recast(raw, max_sec)
         local rem_int = math_floor(rem + 0.5)
         menu_cache.on_cd = true
 
-        if rem_int ~= last_recast_str_sec then
+        if rem_int ~= menu_cache.last_recast_str_sec then
             menu_cache.recast = fmt_recast(rem)
-            last_recast_str_sec = rem_int
+            menu_cache.last_recast_str_sec = rem_int
         end
 
         menu_cache.recast_color = C.MENU_NOTRDY
@@ -519,30 +523,28 @@ local function set_menu_recast(raw, max_sec)
             and math_max(0.0, math_min(1.0, 1 - rem / max_sec)) or 0
     else
         menu_cache.on_cd = false
-        if last_recast_str_sec ~= 0 then
+        if menu_cache.last_recast_str_sec ~= 0 then
             menu_cache.recast = 'Ready'
-            last_recast_str_sec = 0
+            menu_cache.last_recast_str_sec = 0
         end
         menu_cache.recast_color = C.MENU_READY
         menu_cache.cd_frac      = 1
     end
 end
 
-local last_sid, last_aid, last_mid = -2, -2, -2
-
 local function rebuild_menu_info()
     menu_cache.active    = false
     menu_cache.is_charge = false
 
     -- Magic menu --------------------------------------------------------------
-    local sid = menu_selected_id(sig_magic_sel, fn_getitem_spell)
+    local sid = menu_selected_id(msig.magic, msig.fn_spell)
     if sid >= 0 then
         local sp = rm:GetSpellById(sid)
         if sp then
             menu_cache.active     = true
-            if sid ~= last_sid then
+            if sid ~= menu_cache.last_sid then
                 menu_cache.name       = sp.Name[1] or sp.Name[0] or 'Spell'
-                last_sid = sid
+                menu_cache.last_sid = sid
             end
             menu_cache.name_color = C.MENU_NAME
             menu_cache.bar_color  = C.MENU_BAR_SP
@@ -562,17 +564,17 @@ local function rebuild_menu_info()
             return
         end
     end
-    last_sid = -2
+    menu_cache.last_sid = -2
 
     -- Abilities menu ----------------------------------------------------------
-    local aid = menu_selected_id(sig_ability_sel, fn_getitem_ability)
+    local aid = menu_selected_id(msig.ability, msig.fn_ability)
     if aid >= 0 then
         local ab = rm:GetAbilityById(aid)
         if ab then
             menu_cache.active     = true
-            if aid ~= last_aid then
+            if aid ~= menu_cache.last_aid then
                 menu_cache.name       = ab.Name[1] or ab.Name[0] or 'Ability'
-                last_aid = aid
+                menu_cache.last_aid = aid
             end
             menu_cache.name_color = C.MENU_NAME
             menu_cache.bar_color  = C.MENU_BAR_JA
@@ -620,18 +622,18 @@ local function rebuild_menu_info()
             return
         end
     end
-    last_aid = -2
+    menu_cache.last_aid = -2
 
     -- Mount menu --------------------------------------------------------------
-    local mid = menu_selected_id(sig_mount_sel, fn_getitem_mount)
+    local mid = menu_selected_id(msig.mount, msig.fn_mount)
     if mid >= 0 then
         menu_cache.active = true
         -- FIX: read the recast every rebuild. It was trapped in the mid-change
         -- gate, so the shared mount cooldown was sampled once on hover then froze.
-        if mid ~= last_mid then
+        if mid ~= menu_cache.last_mid then
             local nm = rm:GetString('mounts.names', mid)
             menu_cache.name = (nm and nm ~= '') and nm or 'Mount'
-            last_mid = mid
+            menu_cache.last_mid = mid
         end
         menu_cache.name_color = C.MENU_NAME
         menu_cache.bar_color  = C.MENU_BAR_JA
@@ -646,7 +648,7 @@ local function rebuild_menu_info()
         set_menu_recast(raw, 60)
         return
     end
-    last_mid = -2
+    menu_cache.last_mid = -2
 end
 
 local function draw_menu_panel(px, py)
@@ -867,17 +869,15 @@ end
 ------------------------------------------------------------
 -- PARSE TARGET DATA
 ------------------------------------------------------------
--- OPT 1: single source for distance -> color. NEAR under 22, MID under 30,
+-- NEAR under 22, MID under 30,
 -- RED for everything 30+ (unconditional catch-all, so a pet sitting past 50
--- stays RED instead of falling through to nil). Was duplicated in both parsers.
+-- stays RED instead of falling through to nil).
 local function dist_color_for(dist)
     return (dist < 22.0) and C.DIST_NEAR
         or (dist < 30.0) and C.DIST_MID
         or C.DIST_RED
 end
 
--- OPT 2: HP-derived cache fields (str / dead / frac / bar color) were the same
--- block in both parsers; fold to one writer. Called only when hp_pct changes.
 local function apply_hp(cache, hp_pct)
     cache.hp_pct    = hp_pct
     cache.hp_str    = PERCENT_STR_LUT[hp_pct] or (tostring(hp_pct) .. '%')
@@ -945,10 +945,10 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
     if out_cache.raw_name ~= cur_name or out_cache.is_locked ~= is_locked then
         out_cache.raw_name     = cur_name
         out_cache.is_locked    = is_locked
-        out_cache.display_name = is_locked and ('<' .. cur_name .. '>') or cur_name
+        out_cache.display_name = is_locked and ('[' .. cur_name .. ']') or cur_name
     end
 
-    if out_cache.hp_pct ~= hp_pct then apply_hp(out_cache, hp_pct) end   -- OPT 2
+    if out_cache.hp_pct ~= hp_pct then apply_hp(out_cache, hp_pct) end 
 
     if not out_cache.last_dist_sq
     or math_abs(out_cache.last_dist_sq - dist_sq) > math_max(1.0, out_cache.last_dist_sq * 0.02) then
@@ -956,7 +956,7 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
         local dist = math_sqrt(dist_sq)
         out_cache.dist_str     = str_format('%.1f', dist)
 
-        out_cache.dist_color   = dist_color_for(dist)   -- OPT 1
+        out_cache.dist_color   = dist_color_for(dist)  
     end
 
     out_cache.name_color  = name_color
@@ -978,14 +978,14 @@ local function parse_pet_data(petIdx, c, entity)
         c.raw_name     = nm
         c.display_name = nm
     end
-    if c.hp_pct ~= hp_pct then apply_hp(c, hp_pct) end   -- OPT 2
+    if c.hp_pct ~= hp_pct then apply_hp(c, hp_pct) end 
     if not c.last_dist_sq
     or math_abs(c.last_dist_sq - dist_sq) > math_max(1.0, c.last_dist_sq * 0.02) then
         c.last_dist_sq = dist_sq
         local dist = math_sqrt(dist_sq)
         c.dist_str     = str_format('%.1f', dist)
 
-        c.dist_color   = dist_color_for(dist)   -- OPT 1
+        c.dist_color   = dist_color_for(dist)  
     end
     c.name_color  = C.PC_PARTY
     c.is_real_npc = false
@@ -1290,7 +1290,7 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
     end
 
     local lower_name = str_lower(action_name)
-    for i = 1, #EXCLUDED_KEYWORDS do   -- OPT: numeric for + plain find
+    for i = 1, #EXCLUDED_KEYWORDS do 
         if str_find(lower_name, EXCLUDED_KEYWORDS[i], 1, true) then return end
     end
 
@@ -1465,7 +1465,7 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
                 else
                     local lower_text  = str_lower(raw_text)
                     local is_excluded = false
-                    for i = 1, #EXCLUDED_KEYWORDS do   -- OPT: numeric for + plain find
+                    for i = 1, #EXCLUDED_KEYWORDS do 
                         if str_find(lower_text, EXCLUDED_KEYWORDS[i], 1, true) then
                             is_excluded = true
                             break

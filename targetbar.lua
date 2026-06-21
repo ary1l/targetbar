@@ -185,6 +185,13 @@ local EXCLUDED_KEYWORDS = {
     'view house', 'key items', 'quests', 'missions',
 }
 
+local function is_excluded_text(lower)
+    for i = 1, #EXCLUDED_KEYWORDS do
+        if str_find(lower, EXCLUDED_KEYWORDS[i], 1, true) then return true end
+    end
+    return false
+end
+
 ------------------------------------------------------------
 -- STATE
 ------------------------------------------------------------
@@ -610,11 +617,7 @@ local function rebuild_menu_info()
                 menu_cache.on_cd = false
                 menu_cache.cd_frac = 0
 
-                if ptp >= 1000 then
-                    menu_cache.recast_color = C.MENU_READY
-                else
-                    menu_cache.recast_color = C.MENU_NOTRDY
-                end
+                menu_cache.recast_color = (ptp >= 1000) and C.MENU_READY or C.MENU_NOTRDY
             else
                 menu_cache.cost = ''
                 set_menu_recast(raw, maxs)
@@ -651,7 +654,7 @@ local function rebuild_menu_info()
     menu_cache.last_mid = -2
 end
 
-local function draw_menu_panel(px, py)
+local function begin_panel(win_id, px, py, panel_col)
     v_pos[1], v_pos[2] = px, py
     igSetNextWindowPos(v_pos, igCond_Always)
 
@@ -659,18 +662,22 @@ local function draw_menu_panel(px, py)
     igSetNextWindowSize(v_size, igCond_Always)
 
     p_open[1] = true
-    local win_h = 0
-    if igBegin('##targetbar_menu', p_open, FLAGS_LOCKED) then
-        local wx, wy = igGetWindowPos()
-        local ww, wh = igGetWindowSize()
-        win_h = wh
-        local dl = igGetWindowDrawList()
-        if dl then
-            v_p1[1], v_p1[2] = wx, wy
-            v_p2[1], v_p2[2] = wx + ww, wy + wh
-            dl:AddRectFilled(v_p1, v_p2, C.PANEL_MENU, 4.0)
-        end
+    if not igBegin(win_id, p_open, FLAGS_LOCKED) then return false, nil, 0 end
 
+    local wx, wy = igGetWindowPos()
+    local ww, wh = igGetWindowSize()
+    local dl = igGetWindowDrawList()
+    if dl then
+        v_p1[1], v_p1[2] = wx, wy
+        v_p2[1], v_p2[2] = wx + ww, wy + wh
+        dl:AddRectFilled(v_p1, v_p2, panel_col, 4.0)
+    end
+    return true, dl, wh
+end
+
+local function draw_menu_panel(px, py)
+    local opened, dl, win_h = begin_panel('##targetbar_menu', px, py, C.PANEL_MENU)
+    if opened then
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
         igSetCursorPosY(igGetCursorPosY() + TOP_PADDING)
 
@@ -878,6 +885,16 @@ local function dist_color_for(dist)
         or C.DIST_RED
 end
 
+local function update_dist(cache, dist_sq)
+    if not cache.last_dist_sq
+    or math_abs(cache.last_dist_sq - dist_sq) > math_max(1.0, cache.last_dist_sq * 0.02) then
+        cache.last_dist_sq = dist_sq
+        local dist = math_sqrt(dist_sq)
+        cache.dist_str   = str_format('%.1f', dist)
+        cache.dist_color = dist_color_for(dist)
+    end
+end
+
 local function apply_hp(cache, hp_pct)
     cache.hp_pct    = hp_pct
     cache.hp_str    = PERCENT_STR_LUT[hp_pct] or (tostring(hp_pct) .. '%')
@@ -950,14 +967,7 @@ local function parse_target_data(tIdx, out_cache, force_sub_brackets, entity, ta
 
     if out_cache.hp_pct ~= hp_pct then apply_hp(out_cache, hp_pct) end 
 
-    if not out_cache.last_dist_sq
-    or math_abs(out_cache.last_dist_sq - dist_sq) > math_max(1.0, out_cache.last_dist_sq * 0.02) then
-        out_cache.last_dist_sq = dist_sq
-        local dist = math_sqrt(dist_sq)
-        out_cache.dist_str     = str_format('%.1f', dist)
-
-        out_cache.dist_color   = dist_color_for(dist)  
-    end
+    update_dist(out_cache, dist_sq)
 
     out_cache.name_color  = name_color
     out_cache.is_real_npc = is_real_npc
@@ -979,14 +989,7 @@ local function parse_pet_data(petIdx, c, entity)
         c.display_name = nm
     end
     if c.hp_pct ~= hp_pct then apply_hp(c, hp_pct) end 
-    if not c.last_dist_sq
-    or math_abs(c.last_dist_sq - dist_sq) > math_max(1.0, c.last_dist_sq * 0.02) then
-        c.last_dist_sq = dist_sq
-        local dist = math_sqrt(dist_sq)
-        c.dist_str     = str_format('%.1f', dist)
-
-        c.dist_color   = dist_color_for(dist)  
-    end
+    update_dist(c, dist_sq)
     c.name_color  = C.PC_PARTY
     c.is_real_npc = false
     c.is_mob      = false
@@ -1000,30 +1003,13 @@ pet.parse = parse_pet_data
 -- DRAW: HP BAR
 ------------------------------------------------------------
 local function draw_bar(data, win_id, pos_x, pos_y, bar_h, is_sub, force_blue, menu_text, bar_width, show_distance)
-    v_pos[1], v_pos[2] = pos_x, pos_y
-    igSetNextWindowPos(v_pos, igCond_Always)
-
-    v_size[1], v_size[2] = rcache.win_w, 0
-    igSetNextWindowSize(v_size, igCond_Always)
-
-    p_open[1] = true
-    local win_h = 0
-    if igBegin(win_id, p_open, FLAGS_LOCKED) then
-        local wx, wy = igGetWindowPos()
-        local ww, wh = igGetWindowSize()
-        win_h = wh
-        local dl = igGetWindowDrawList()
-        if dl then
-            v_p1[1], v_p1[2] = wx, wy
-            v_p2[1], v_p2[2] = wx + ww, wy + wh
-            local panel_col = force_blue and C.PANEL_BLUE
-                           or (data.is_pet and C.PANEL_PET)
-                           or (data.is_real_npc and C.PANEL_NPC)
-                           or (data.is_mob and C.PANEL_MOB)
-                           or C.PANEL_BG
-            dl:AddRectFilled(v_p1, v_p2, panel_col, 4.0)
-        end
-
+    local panel_col = force_blue and C.PANEL_BLUE
+                   or (data.is_pet and C.PANEL_PET)
+                   or (data.is_real_npc and C.PANEL_NPC)
+                   or (data.is_mob and C.PANEL_MOB)
+                   or C.PANEL_BG
+    local opened, dl, win_h = begin_panel(win_id, pos_x, pos_y, panel_col)
+    if opened then
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
         if not is_sub then igSetCursorPosY(igGetCursorPosY() + TOP_PADDING) end
 
@@ -1072,26 +1058,9 @@ end
 -- DRAW: CAST BAR
 ------------------------------------------------------------
 local function draw_cast_bar(cast_frac, pos_x, pos_y, bar_width)
-    v_pos[1], v_pos[2] = pos_x, pos_y
-    igSetNextWindowPos(v_pos, igCond_Always)
-
-    v_size[1], v_size[2] = rcache.win_w, 0
-    igSetNextWindowSize(v_size, igCond_Always)
-
-    p_open[1] = true
-    local win_h = 0
-    if igBegin('##targetbar_cast', p_open, FLAGS_LOCKED) then
-        local wx, wy = igGetWindowPos()
-        local ww, wh = igGetWindowSize()
-        win_h = wh
-        local dl = igGetWindowDrawList()
-        if dl then
-            v_p1[1], v_p1[2] = wx, wy
-            v_p2[1], v_p2[2] = wx + ww, wy + wh
-            dl:AddRectFilled(v_p1, v_p2,
-                cast_state.is_item and C.PANEL_ITEM or C.PANEL_CAST, 4.0)
-        end
-
+    local opened, dl, win_h = begin_panel('##targetbar_cast', pos_x, pos_y,
+        cast_state.is_item and C.PANEL_ITEM or C.PANEL_CAST)
+    if opened then
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
         igSetCursorPosY(igGetCursorPosY() + TOP_PADDING)
 
@@ -1131,25 +1100,8 @@ end
 -- DRAW: JA FLASH BAR
 ------------------------------------------------------------
 local function draw_ja_bar(pos_x, pos_y)
-    v_pos[1], v_pos[2] = pos_x, pos_y
-    igSetNextWindowPos(v_pos, igCond_Always)
-
-    v_size[1], v_size[2] = rcache.win_w, 0
-    igSetNextWindowSize(v_size, igCond_Always)
-
-    p_open[1] = true
-    local win_h = 0
-    if igBegin('##targetbar_ja', p_open, FLAGS_LOCKED) then
-        local wx, wy = igGetWindowPos()
-        local ww, wh = igGetWindowSize()
-        win_h = wh
-        local dl = igGetWindowDrawList()
-        if dl then
-            v_p1[1], v_p1[2] = wx, wy
-            v_p2[1], v_p2[2] = wx + ww, wy + wh
-            dl:AddRectFilled(v_p1, v_p2, C.PANEL_JA, 4.0)
-        end
-
+    local opened, _dl, win_h = begin_panel('##targetbar_ja', pos_x, pos_y, C.PANEL_JA)
+    if opened then
         igSetCursorPosX(igGetCursorPosX() + PANEL_PADDING)
         igSetCursorPosY(igGetCursorPosY() + TOP_PADDING)
 
@@ -1289,10 +1241,7 @@ ashita.events.register('packet_out', 'targetbar_packet_out', function(e)
         cast_secs = resource_cast_seconds(r)
     end
 
-    local lower_name = str_lower(action_name)
-    for i = 1, #EXCLUDED_KEYWORDS do 
-        if str_find(lower_name, EXCLUDED_KEYWORDS[i], 1, true) then return end
-    end
+    if is_excluded_text(str_lower(action_name)) then return end
 
     if action_name == '' or action_name == 'Gil' then return end
 
@@ -1463,15 +1412,8 @@ ashita.events.register('d3d_present', 'targetbar_render', function()
                 if raw_text == '' then
                     last_menu_text = ''
                 else
-                    local lower_text  = str_lower(raw_text)
-                    local is_excluded = false
-                    for i = 1, #EXCLUDED_KEYWORDS do 
-                        if str_find(lower_text, EXCLUDED_KEYWORDS[i], 1, true) then
-                            is_excluded = true
-                            break
-                        end
-                    end
-                    last_menu_text = is_excluded and '' or ('(' .. raw_text .. ')')
+                    last_menu_text = is_excluded_text(str_lower(raw_text))
+                        and '' or ('(' .. raw_text .. ')')
                 end
             end
 
